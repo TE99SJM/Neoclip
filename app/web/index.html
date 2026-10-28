@@ -278,13 +278,6 @@
             <p id="speedStatus" class="status" role="status" aria-live="polite"></p>
         </div>
 
-        <button id="pipButton"
-                class="field"
-                type="button"
-                onclick="togglePictureInPicture()">
-            Picture in Picture
-        </button>
-        <p id="pipHelp" class="status">Start playback, then tap Picture in Picture. Availability depends on your browser and phone settings.</p>
 
 
 
@@ -1269,8 +1262,8 @@ This cannot be undone.`
                 // Mobile autoplay rejection is NOT a proxy/seek failure.
                 try { await video.play(); } catch (error) {
                     if (error.name !== "NotAllowedError") throw error;
-                    document.getElementById("pipHelp").textContent =
-                        "Preview is ready. Tap Play, then Picture in Picture.";
+                    document.getElementById("pipelineStatus").textContent =
+                        "Preview is ready. Tap Play.";
                 }
             } else {
                 video.pause();
@@ -1292,7 +1285,6 @@ This cannot be undone.`
         clearPlayerLoading("proxy");
         clearMediaLoadingIfReady();
         updateSourceClock();
-        updatePictureInPictureButton();
 
         document.getElementById("selectedFile").textContent = file.path;
         return true;
@@ -1321,87 +1313,10 @@ This cannot be undone.`
     function togglePlayback() {
         if (video.paused) {
             video.play().catch(error => {
-                document.getElementById("pipHelp").textContent = error.message;
+                document.getElementById("pipelineStatus").textContent = error.message;
             });
         } else video.pause();
     }
-
-    function updatePictureInPictureButton() {
-        const button = document.getElementById("pipButton");
-        if (!button) return;
-
-        const webkitPiP =
-            video.webkitPresentationMode === "picture-in-picture";
-        const standardPiP = document.pictureInPictureElement === video;
-
-        button.textContent = webkitPiP || standardPiP
-            ? "Exit Picture in Picture"
-            : "Picture in Picture";
-        const standard = document.pictureInPictureEnabled &&
-            typeof video.requestPictureInPicture === "function";
-        const apple = typeof video.webkitSetPresentationMode === "function" &&
-            (typeof video.webkitSupportsPresentationMode !== "function" ||
-             video.webkitSupportsPresentationMode("picture-in-picture"));
-        button.disabled = video.readyState < 2 || !(standard || apple);
-        if (video.readyState >= 2 && !standard && !apple) {
-            document.getElementById("pipHelp").textContent =
-                "This browser does not expose PiP. Try your phone's native video controls or another supported browser. Use HTTPS for the installed web app.";
-        }
-    }
-
-    async function togglePictureInPicture() {
-        if (video.readyState === 0) {
-            alert("Choose a video and wait for it to load first.");
-            return;
-        }
-
-        try {
-            // iPhone/iPad Safari uses Apple's presentation-mode API.
-            if (typeof video.webkitSetPresentationMode === "function" &&
-                (typeof video.webkitSupportsPresentationMode !== "function" ||
-                 video.webkitSupportsPresentationMode("picture-in-picture"))) {
-                if (
-                    typeof video.webkitSupportsPresentationMode === "function" &&
-                    !video.webkitSupportsPresentationMode("picture-in-picture")
-                ) {
-                    throw new Error("This video cannot enter Picture in Picture.");
-                }
-
-                const nextMode =
-                    video.webkitPresentationMode === "picture-in-picture"
-                        ? "inline"
-                        : "picture-in-picture";
-
-                video.webkitSetPresentationMode(nextMode);
-                updatePictureInPictureButton();
-                return;
-            }
-
-            // Chrome, Edge, and browsers implementing the standard PiP API.
-            if (document.pictureInPictureElement === video) {
-                await document.exitPictureInPicture();
-            } else if (
-                document.pictureInPictureEnabled &&
-                typeof video.requestPictureInPicture === "function"
-            ) {
-                await video.requestPictureInPicture();
-            } else {
-                throw new Error("Picture in Picture is unavailable in this browser.");
-            }
-
-            updatePictureInPictureButton();
-        } catch (error) {
-            alert("Picture in Picture could not start: " + error.message);
-        }
-    }
-
-    video.addEventListener(
-        "webkitpresentationmodechanged",
-        updatePictureInPictureButton
-    );
-    video.addEventListener("enterpictureinpicture", updatePictureInPictureButton);
-    video.addEventListener("leavepictureinpicture", updatePictureInPictureButton);
-    video.addEventListener("loadeddata", updatePictureInPictureButton);
 
     function proxyContainsTime(status, target) {
         // Server-generated coverage, NOT the browser's transient MSE buffer.
@@ -1737,7 +1652,6 @@ This cannot be undone.`
     }
 
     async function initializeEditor() {
-        updatePictureInPictureButton();
         if (!window.NEOCLIP_PREVIEW && "serviceWorker" in navigator && window.isSecureContext) {
             navigator.serviceWorker.register("/sw.js").catch(() => {});
         }
