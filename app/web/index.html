@@ -182,6 +182,7 @@
         }
 
         .hidden { display: none; }
+        #pipelineStatus:empty, #selectedFile:empty { display: none; }
 
         @media (max-width: 520px) {
             .grid-5 {
@@ -200,6 +201,11 @@
         .mark-controls button, .jump-controls button, .jump-controls input { min-height: 44px; }
         .jump-controls input { width: 100%; box-sizing: border-box; font-size: 16px; }
         .clock { font-variant-numeric: tabular-nums; }
+        .edit-controls .player-controls { margin-top: 0; }
+        .edit-controls .status { margin: 8px 0; }
+        .clip-add-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 8px; }
+        .clip-add-row input { width: 100%; }
+        .clip-add-row button { padding: 10px 18px; }
         .brand { display: flex; gap: 10px; align-items: center; }
         .brand svg { width: 28px; height: 28px; color: #83cfff; }
     </style>
@@ -208,7 +214,6 @@
 <body>
 <main>
     <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip Remote</h1>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.0.2</p>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
@@ -226,21 +231,33 @@
         </div>
         </div>
 
-        <div class="panel">
+        <!-- Editing controls: skip/play, then Mark In/Out, then clip name + Add Clip -->
+        <div class="panel edit-controls">
+            <div class="grid-5 player-controls" role="group" aria-label="Playback controls">
+                <button class="back-30" onclick="skip(-30)">−30</button>
+                <button class="back-10" onclick="skip(-10)">−10</button>
+                <button class="play-pause" onclick="togglePlayback()">Play/Pause</button>
+                <button class="forward-10" onclick="skip(10)">+10</button>
+                <button class="forward-30" onclick="skip(30)">+30</button>
+            </div>
+            <p id="sourceClock" class="status clock" aria-live="off">00:00 / 00:00</p>
+
             <div class="grid-2 mark-controls" role="group" aria-label="Clip markers">
                 <button type="button" onclick="markIn()">Mark In</button>
                 <button type="button" onclick="markOut()">Mark Out</button>
             </div>
-            <p id="sourceClock" class="status clock" aria-live="off">00:00 / 00:00</p>
-            <p id="pipelineStatus" class="status" aria-live="polite">Preparing preview</p>
-        </div>
+            <p id="markStatus" class="status">
+                IN: not set<br>
+                OUT: not set
+            </p>
 
-        <div class="grid-5 player-controls">
-            <button class="back-30" onclick="skip(-30)">−30</button>
-            <button class="back-10" onclick="skip(-10)">−10</button>
-            <button class="play-pause" onclick="togglePlayback()">Play/Pause</button>
-            <button class="forward-10" onclick="skip(10)">+10</button>
-            <button class="forward-30" onclick="skip(30)">+30</button>
+            <div class="clip-add-row">
+                <input id="clipName"
+                       placeholder="Clip name (optional)"
+                       aria-label="Clip name">
+                <button type="button" onclick="addClip()">Add Clip</button>
+            </div>
+            <p id="pipelineStatus" class="status" aria-live="polite"></p>
         </div>
 
         <div class="panel speed-control">
@@ -270,19 +287,6 @@
         <p id="pipHelp" class="status">Start playback, then tap Picture in Picture. Availability depends on your browser and phone settings.</p>
 
 
-
-        <div class="panel">
-            <input id="clipName"
-                   class="field"
-                   placeholder="Clip name (optional)">
-
-            <p id="markStatus" class="status">
-                IN: not set<br>
-                OUT: not set
-            </p>
-
-            <button class="field" onclick="addClip()">Add Clip</button>
-        </div>
 
         <div class="panel">
             <h2>Clip Queue</h2>
@@ -468,9 +472,8 @@
             `${formatClock(time)} / ${formatClock(sourceDuration)}`;
     }
     function showPipeline(status) {
-        document.getElementById("pipelineStatus").textContent =
-            `${status.pipeline || status.message}. Proxy starts at ${formatClock(status.start_seconds)}.` +
-            (status.fallback_reason ? " GPU fallback active; details in server logs." : "");
+        // Pipeline/GPU details stay in the server logs; the GUI only shows errors.
+        document.getElementById("pipelineStatus").textContent = "";
     }
 
     function destroyHls() {
@@ -1038,7 +1041,7 @@
         const confirmed = window.confirm(
             `Delete "${name}"?
 
-This permanently removes the source file and its 360p proxy.
+This permanently removes the source file and its preview files.
 This cannot be undone.`
         );
         if (!confirmed) {
@@ -1116,7 +1119,7 @@ This cannot be undone.`
         currentSourcePath = file.path;
         activeFile = file;
         document.getElementById("playerSection").classList.remove("hidden");
-        document.getElementById("selectedFile").textContent = `${file.path}: preparing preview`;
+        document.getElementById("selectedFile").textContent = file.path;
 
         const selectedState = await api("/api/source", {
             method: "POST",
@@ -1140,7 +1143,7 @@ This cannot be undone.`
         // here because many source containers (mkv/avi/...) will not play
         // in a browser at all.
         document.getElementById("selectedFile").textContent =
-            `${file.path} — preparing 360p stream…`;
+            file.path;
 
         // Kick off the player on a neutral source; watchProxyAndSwitch will
         // attach the live HLS playlist the moment it becomes playable.
@@ -1219,15 +1222,11 @@ This cannot be undone.`
                 }
 
                 document.getElementById("selectedFile").textContent =
-                    pendingResumeSeconds > available
-                        ? `${file.path} — resuming at ${formatClock(pendingResumeSeconds)}; ` +
-                          `proxy built to ${formatClock(available)}`
-                        : `${file.path} — preparing 360p stream; ` +
-                          `built to ${formatClock(available)}`;
+                    file.path;
 
             } catch (error) {
                 document.getElementById("selectedFile").textContent =
-                    `${file.path} — preparing 360p stream…`;
+                    file.path;
             }
 
             // Poll quickly while the first segment is being written so playback
@@ -1250,7 +1249,7 @@ This cannot be undone.`
         restoringPlayhead = true;
 
         document.getElementById("selectedFile").textContent =
-            `${file.path} — switching to 360p proxy…`;
+            file.path;
 
         try {
             proxyOffset = status.start_seconds;
@@ -1295,13 +1294,7 @@ This cannot be undone.`
         updateSourceClock();
         updatePictureInPictureButton();
 
-        const streamLabel = status.status === "ready"
-            ? "360p proxy ready"
-            : "360p proxy streaming";
-        document.getElementById("selectedFile").textContent =
-            resumeAt > 0
-                ? `${file.path} — resumed at ${formatClock(resumeAt)}; ${streamLabel}`
-                : `${file.path} — ${streamLabel}`;
+        document.getElementById("selectedFile").textContent = file.path;
         return true;
     }
 
@@ -1420,7 +1413,7 @@ This cannot be undone.`
         const local = Math.max(0, target - proxyOffset);
         restoringPlayhead = true;
         document.getElementById("selectedFile").textContent =
-            `${activeFile.path}: seeking to ${formatClock(target)} in the existing proxy`;
+            activeFile.path;
         const deadline = Date.now() + 30000;
         let assigned = false;
         while (Date.now() < deadline && revision === seekRevision) {
@@ -1497,7 +1490,7 @@ This cannot be undone.`
                             target - status.available_end <= 8 &&
                             Date.now() < waitUntil) {
                         document.getElementById("selectedFile").textContent =
-                            `${path}: waiting for the next proxy segment at ${formatClock(target)}`;
+                            path;
                         setPlayerLoading("seek", `Waiting for preview at ${formatClock(target)}…`);
                         await new Promise(resolve => setTimeout(resolve, 400));
                         if (!valid()) break;
@@ -1535,7 +1528,7 @@ This cannot be undone.`
                     }
                     if (valid()) {
                         document.getElementById("selectedFile").textContent =
-                            `${path}: ${formatClock(target)} in proxy starting at ${formatClock(proxyOffset)}`;
+                            path;
                     }
                 } catch (error) {
                     if (valid()) document.getElementById("selectedFile").textContent = error.message;
@@ -1565,7 +1558,7 @@ This cannot be undone.`
     function jumpToTime() {
         const value = document.getElementById("jumpTime").value.trim();
         if (!/^\d+(?::\d{1,2}){0,2}(?:\.\d+)?$/.test(value)) {
-            document.getElementById("pipelineStatus").textContent = "Enter seconds, mm:ss, or hh:mm:ss.";
+            document.getElementById("jumpTimeHelp").textContent = "Enter seconds, mm:ss, or hh:mm:ss.";
             return;
         }
         seekSource(value.split(":").reduce((acc, part) => acc * 60 + Number(part), 0));
