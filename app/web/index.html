@@ -246,10 +246,6 @@
                 <button type="button" onclick="markIn()">Mark In</button>
                 <button type="button" onclick="markOut()">Mark Out</button>
             </div>
-            <p id="markStatus" class="status">
-                IN: not set<br>
-                OUT: not set
-            </p>
 
             <div class="clip-add-row">
                 <input id="clipName"
@@ -257,6 +253,10 @@
                        aria-label="Clip name">
                 <button type="button" onclick="addClip()">Add Clip</button>
             </div>
+            <p id="markStatus" class="status">
+                IN: not set<br>
+                OUT: not set
+            </p>
             <p id="pipelineStatus" class="status" aria-live="polite"></p>
         </div>
 
