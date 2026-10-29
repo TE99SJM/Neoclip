@@ -2,7 +2,7 @@
 
 Thanks for your interest in NeoClip. The project is in an early public stage and help with documentation, bug reports, testing, and code review is welcome.
 
-> **License:** NeoClip is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). By submitting a contribution, you confirm you have the right to contribute it and you agree that the maintainer may distribute it under that license and under separate commercial licenses. Open an issue before undertaking significant changes so you can coordinate with the maintainer.
+> **License:** NeoClip is licensed under the [GNU AGPLv3](LICENSE). By submitting a contribution, you confirm you have the right to contribute it and agree that it is licensed under the AGPLv3, the same as the rest of NeoClip. Open an issue before undertaking significant changes so you can coordinate with the maintainer.
 
 ## Report a problem
 

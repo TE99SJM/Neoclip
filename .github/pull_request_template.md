@@ -23,4 +23,4 @@ Optional (redact private paths, filenames, and content).
 
 Describe anything that is still incomplete.
 
-> **License:** NeoClip uses the PolyForm Noncommercial License 1.0.0. By submitting this pull request, you confirm you have the right to contribute it and agree the maintainer may distribute it under that license and under separate commercial licenses.
+> **License:** NeoClip uses the GNU AGPLv3. By submitting this pull request, you confirm you have the right to contribute it and agree that it is licensed under the AGPLv3.
