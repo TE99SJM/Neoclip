@@ -228,6 +228,32 @@
         .primary { background: #1f6fb2; color: #fff; }
         .primary:hover { background: #2780cc; }
         @media (max-width: 520px) { .picker-actions { grid-template-columns: 1fr; } }
+        /* Once a video is open, the library moves into the Switch video menu. */
+        #playerSection:not(.hidden) ~ #videoLibrary { display: none; }
+        .now-editing { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 10px; padding: 10px 12px; background: #1d1d1d; border-radius: 10px; }
+        .now-editing-text { min-width: 0; }
+        .now-editing-label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #8a8a8a; }
+        .now-editing strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; }
+        .switch-video { flex: none; padding: 10px 16px; background: #1f6fb2; color: #fff; font-weight: 600; }
+        .switch-video:hover { background: #2780cc; }
+        .video-menu { width: min(640px, calc(100vw - 24px)); max-height: min(80vh, 760px); padding: 0; border: 1px solid #333; border-radius: 12px; background: #1d1d1d; color: #fff; overflow: hidden; }
+        .video-menu[open] { display: flex; flex-direction: column; }
+        .video-menu::backdrop { background: rgba(0,0,0,.65); }
+        .video-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 16px 0; }
+        .video-menu-head h2 { margin: 0; font-size: 20px; }
+        .video-menu-head button { min-height: 40px; padding: 8px 14px; }
+        .video-menu-tools { padding: 10px 16px 0; }
+        .video-menu-tools input { width: 100%; }
+        .video-menu-count { margin: 8px 0 0; font-size: 13px; }
+        .video-menu-list { overflow: auto; padding: 4px 16px 16px; }
+        .file-button.current { outline: 2px solid #83cfff; outline-offset: -2px; background: #dff1ff; }
+        .badge { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; vertical-align: 2px; }
+        .badge.now { background: #1f6fb2; color: #fff; }
+        .badge.queued { background: #3a2f10; color: #ffe7a3; }
+        @media (max-width: 520px) {
+            .video-menu { width: 100vw; max-width: 100vw; max-height: 88vh; margin: auto 0 0; border-radius: 14px 14px 0 0; }
+            .now-editing strong { font-size: 15px; }
+        }
         .legal { margin: 24px 0 8px; font-size: 13px; color: #8a8a8a; text-align: center; line-height: 1.6; }
         .legal a { color: #83cfff; }
     </style>
@@ -289,6 +315,14 @@
     </section>
 
     <section id="playerSection" class="hidden">
+        <div class="now-editing">
+            <div class="now-editing-text">
+                <span class="now-editing-label">Now editing</span>
+                <strong id="currentVideoName" title=""></strong>
+            </div>
+            <button type="button" class="switch-video" onclick="openVideoMenu()"
+                    aria-haspopup="dialog" aria-controls="videoMenu">Switch video</button>
+        </div>
         <p id="selectedFile" class="status"></p>
 
         <div id="videoStage" class="video-stage" aria-busy="false">
@@ -398,11 +432,24 @@
         </div>
     </section>
 
-    <section class="panel">
+    <section id="videoLibrary" class="panel">
         <h2>Videos</h2>
         <p id="fileStatus" class="status">Loading videos…</p>
         <div id="files"></div>
     </section>
+    <dialog id="videoMenu" class="video-menu" aria-labelledby="videoMenuTitle">
+        <div class="video-menu-head">
+            <h2 id="videoMenuTitle">Switch video</h2>
+            <button type="button" onclick="closeVideoMenu()">Close</button>
+        </div>
+        <div class="video-menu-tools">
+            <input id="videoSearch" type="search" placeholder="Search videos"
+                   aria-label="Search videos" autocomplete="off" oninput="renderVideoMenu()">
+            <p id="videoMenuCount" class="status video-menu-count" aria-live="polite"></p>
+        </div>
+        <div id="videoMenuList" class="video-menu-list"></div>
+    </dialog>
+
     <footer class="legal">
         NeoClip &middot; Copyright &copy; 2026 TE99SJM &middot; Free software under the
         <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">GNU AGPLv3</a>
@@ -888,6 +935,93 @@
         updateMarkStatus();
     }
 
+    let libraryFiles = [];
+    let libraryState = {clip_counts: {}};
+
+    function videoButton(file, savedState, onPick = selectVideo) {
+        const button = document.createElement("button");
+        button.type = "button";
+        const isCurrent = file.path === currentSourcePath;
+        button.className = "file-button" + (isCurrent ? " current" : "");
+        if (isCurrent) button.setAttribute("aria-current", "true");
+
+        const queuedCount = (savedState.clip_counts || {})[file.path] || 0;
+        const badges =
+            (isCurrent ? `<span class="badge now">Now editing</span>` : "") +
+            (queuedCount
+                ? `<span class="badge queued">${queuedCount} queued clip${queuedCount === 1 ? "" : "s"}</span>`
+                : "");
+
+        button.innerHTML =
+            `<strong>${escapeHtml(file.name)}</strong>${badges}` +
+            `<span class="path">${escapeHtml(file.path)}</span>`;
+        button.onclick = () => onPick(file);
+        return button;
+    }
+
+    async function openVideoMenu() {
+        const menu = document.getElementById("videoMenu");
+        document.getElementById("videoSearch").value = "";
+        renderVideoMenu();
+        if (!menu.open) menu.showModal();
+        // Skip auto-focus on touch screens so the keyboard doesn't cover the list.
+        if (window.matchMedia("(pointer: fine)").matches) {
+            document.getElementById("videoSearch").focus();
+        }
+        // Refresh in the background so newly added videos appear.
+        await loadFiles();
+    }
+
+    function closeVideoMenu() {
+        const menu = document.getElementById("videoMenu");
+        if (menu.open) menu.close();
+    }
+
+    function renderVideoMenu() {
+        const list = document.getElementById("videoMenuList");
+        const query = document.getElementById("videoSearch").value.trim().toLowerCase();
+        const matches = libraryFiles.filter(
+            file => !query || file.path.toLowerCase().includes(query)
+        );
+        list.innerHTML = "";
+        for (const file of matches) {
+            list.appendChild(videoButton(file, libraryState, pickFromMenu));
+        }
+        const count = document.getElementById("videoMenuCount");
+        if (!libraryFiles.length) {
+            count.textContent = "No videos found in the input folder.";
+        } else if (!matches.length) {
+            count.textContent = "No videos match your search.";
+        } else {
+            count.textContent = query
+                ? `${matches.length} of ${libraryFiles.length} videos`
+                : `${libraryFiles.length} video${libraryFiles.length === 1 ? "" : "s"}`;
+        }
+    }
+
+    function pickFromMenu(file) {
+        closeVideoMenu();
+        if (file.path !== currentSourcePath) selectVideo(file);
+    }
+
+    // A search box normally uses Esc to clear itself; here Esc always closes.
+    document.getElementById("videoMenu").addEventListener("keydown", event => {
+        if (event.key === "Escape") {
+            event.preventDefault();
+            closeVideoMenu();
+        }
+    }, true);
+
+    document.getElementById("videoMenu").addEventListener("click", event => {
+        // Clicking the dark backdrop (outside the panel) closes the menu.
+        if (event.target === event.currentTarget) {
+            const r = event.currentTarget.getBoundingClientRect();
+            const inside = event.clientX >= r.left && event.clientX <= r.right &&
+                           event.clientY >= r.top && event.clientY <= r.bottom;
+            if (!inside) closeVideoMenu();
+        }
+    });
+
     async function loadFiles({restoreLastSession = false} = {}) {
         try {
             const [files, savedState] = await Promise.all([
@@ -895,6 +1029,8 @@
                 api("/api/state")
             ]);
 
+            libraryFiles = files;
+            libraryState = savedState;
             const box = document.getElementById("files");
             box.innerHTML = "";
 
@@ -905,21 +1041,9 @@
                       `${savedState.total_queued_clips} unsaved clip(s) queued`;
 
             for (const file of files) {
-                const button = document.createElement("button");
-                button.className = "file-button";
-
-                const queuedCount = savedState.clip_counts[file.path] || 0;
-                const queuedText = queuedCount
-                    ? ` — ${queuedCount} queued clip${queuedCount === 1 ? "" : "s"}`
-                    : "";
-
-                button.innerHTML =
-                    `<strong>${escapeHtml(file.name)}${queuedText}</strong>` +
-                    `<span class="path">${escapeHtml(file.path)}</span>`;
-
-                button.onclick = () => selectVideo(file);
-                box.appendChild(button);
+                box.appendChild(videoButton(file, savedState));
             }
+            if (document.getElementById("videoMenu").open) renderVideoMenu();
 
             if (restoreLastSession && savedState.source_path) {
                 const previousFile = files.find(
@@ -1191,8 +1315,10 @@ This cannot be undone.`
         stopHeartbeat();
         currentSourcePath = file.path;
         activeFile = file;
+        document.getElementById("currentVideoName").textContent = file.name;
+        document.getElementById("currentVideoName").title = file.path;
         document.getElementById("playerSection").classList.remove("hidden");
-        document.getElementById("selectedFile").textContent = file.path;
+        document.getElementById("selectedFile").textContent = "";
 
         const selectedState = await api("/api/source", {
             method: "POST",
@@ -1215,8 +1341,7 @@ This cannot be undone.`
         // proxy is still being built. We do not rely on the original file
         // here because many source containers (mkv/avi/...) will not play
         // in a browser at all.
-        document.getElementById("selectedFile").textContent =
-            file.path;
+        document.getElementById("selectedFile").textContent = "";
 
         // Kick off the player on a neutral source; watchProxyAndSwitch will
         // attach the live HLS playlist the moment it becomes playable.
@@ -1263,7 +1388,7 @@ This cannot be undone.`
                 if (status.status === "error" || status.status === "stopped") {
                     resetPlayerLoading();
                     document.getElementById("selectedFile").textContent =
-                        `${file.path}: ${status.error || status.message}`;
+                        status.error || status.message;
                     return;
                 }
 
@@ -1294,12 +1419,10 @@ This cannot be undone.`
                     }
                 }
 
-                document.getElementById("selectedFile").textContent =
-                    file.path;
+                document.getElementById("selectedFile").textContent = "";
 
             } catch (error) {
-                document.getElementById("selectedFile").textContent =
-                    file.path;
+                document.getElementById("selectedFile").textContent = "";
             }
 
             // Poll quickly while the first segment is being written so playback
@@ -1321,8 +1444,7 @@ This cannot be undone.`
         currentlyUsingProxy = true;
         restoringPlayhead = true;
 
-        document.getElementById("selectedFile").textContent =
-            file.path;
+        document.getElementById("selectedFile").textContent = "";
 
         try {
             proxyOffset = status.start_seconds;
@@ -1352,7 +1474,7 @@ This cannot be undone.`
             if (watchToken !== proxyWatchToken) return false;
             currentlyUsingProxy = false;
             document.getElementById("selectedFile").textContent =
-                `${file.path} — resume failed: ${error.message}; retrying…`;
+                `Resume failed: ${error.message}; retrying…`;
             return false;
         } finally {
             if (watchToken === proxyWatchToken) restoringPlayhead = false;
@@ -1366,7 +1488,7 @@ This cannot be undone.`
         clearMediaLoadingIfReady();
         updateSourceClock();
 
-        document.getElementById("selectedFile").textContent = file.path;
+        document.getElementById("selectedFile").textContent = "";
         return true;
     }
 
@@ -1407,8 +1529,7 @@ This cannot be undone.`
     async function seekWithinProxy(target, revision) {
         const local = Math.max(0, target - proxyOffset);
         restoringPlayhead = true;
-        document.getElementById("selectedFile").textContent =
-            activeFile.path;
+        document.getElementById("selectedFile").textContent = "";
         const deadline = Date.now() + 30000;
         let assigned = false;
         while (Date.now() < deadline && revision === seekRevision) {
@@ -1484,8 +1605,7 @@ This cannot be undone.`
                             target >= status.available_end - .05 &&
                             target - status.available_end <= 8 &&
                             Date.now() < waitUntil) {
-                        document.getElementById("selectedFile").textContent =
-                            path;
+                        document.getElementById("selectedFile").textContent = "";
                         setPlayerLoading("seek", `Waiting for preview at ${formatClock(target)}…`);
                         await new Promise(resolve => setTimeout(resolve, 400));
                         if (!valid()) break;
@@ -1522,8 +1642,7 @@ This cannot be undone.`
                         }
                     }
                     if (valid()) {
-                        document.getElementById("selectedFile").textContent =
-                            path;
+                        document.getElementById("selectedFile").textContent = "";
                     }
                 } catch (error) {
                     if (valid()) document.getElementById("selectedFile").textContent = error.message;

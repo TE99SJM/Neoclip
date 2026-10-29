@@ -26,6 +26,10 @@ input folder (source videos) and output folder (rendered clips) anywhere under
 and restored on every launch, so the app always starts even before folders are
 chosen; rendering is blocked only until a writable output folder is set.
 
+While editing, use **Switch video** (top of the editor) to open a searchable
+list of every video in the input folder and jump to another one. Each video
+shows its queued clip count, and your place in each video is remembered.
+
 Keep the `data/` folder between upgrades; it holds the settings, clip queues,
 and resume positions. Each input folder keeps its own clip queue.
 
