@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest an improvement for NeoClip
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      placeholder: "It would help if..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Suggested feature
+      description: Explain how it should work from a user's perspective.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or extra context
+      description: Optional screenshots or workflow details.
