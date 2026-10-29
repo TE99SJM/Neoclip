@@ -23,4 +23,4 @@ Optional (redact private paths, filenames, and content).
 
 Describe anything that is still incomplete.
 
-> **Note:** Project licensing and contribution terms are not yet finalized. Please discuss substantial code contributions with the maintainer first.
+> **License:** NeoClip uses the MIT License. Please submit only changes you have the right to contribute under MIT, and discuss substantial changes with the maintainer first.
