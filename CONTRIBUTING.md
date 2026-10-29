@@ -2,7 +2,7 @@
 
 Thanks for your interest in NeoClip. The project is in an early public stage and help with documentation, bug reports, testing, and code review is welcome.
 
-> **License status:** The maintainer has not yet selected a license. A public GitHub repository alone does not grant general reuse rights. Please contact the maintainer through an issue before contributing code, so contribution and licensing expectations can be agreed on first.
+> **License:** NeoClip is distributed under the [MIT License](LICENSE). Please only submit contributions you have the right to license under MIT. Open an issue before undertaking significant changes so you can coordinate with the maintainer.
 
 ## Report a problem
 
