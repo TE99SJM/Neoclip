@@ -55,7 +55,7 @@ Do not present a public live demo connected to private media. Prefer a local scr
 
 ## Suggested rollout checklist
 
-- [x] Add the MIT open-source license (see [LICENSE](../LICENSE))
+- [x] Add the PolyForm Noncommercial license (see [LICENSE](../LICENSE)); describe NeoClip as source-available, not open source
 - [ ] Simplify the nested repository structure
 - [ ] Verify installation on a clean test machine
 - [ ] Resolve or document Docker CUDA/FFmpeg build limitations
