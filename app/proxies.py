@@ -1,3 +1,7 @@
+# NeoClip - Copyright (C) 2026 TE99SJM
+# SPDX-License-Identifier: AGPL-3.0-only
+# See LICENSE for the full GNU Affero General Public License v3.0.
+
 """Bounded, resume-aware HLS jobs. Every playlist has an immutable job ID."""
 
 import asyncio
