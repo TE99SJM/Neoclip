@@ -30,7 +30,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip Web", lifespan=lifespan)
-APP_BUILD = "2.0.2"
+APP_BUILD = "1.1.1"
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
@@ -41,19 +41,109 @@ if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     )
 
 
-MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", "/media")).resolve()
-EXPORT_ROOT = Path(os.getenv("EXPORT_ROOT", "/exports")).resolve()
+# MEDIA_ROOT / EXPORT_ROOT are only the first-run defaults. Once the user
+# picks folders in Settings, the saved choice in DATA_ROOT wins.
+DEFAULT_MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", "/media")).resolve()
+DEFAULT_EXPORT_ROOT = Path(os.getenv("EXPORT_ROOT", "/exports")).resolve()
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data")).resolve()
 WEB_ROOT = Path(__file__).parent / "web"
 QUEUE_FILE = DATA_ROOT / "neoclip_queue.json"
+SETTINGS_FILE = DATA_ROOT / "neoclip_settings.json"
 PROXY_ROOT = DATA_ROOT / "proxies"
 PROXY_HEIGHT = 360
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".m4v", ".avi", ".webm"}
 
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
-EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
 PROXY_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def browse_roots() -> list[Path]:
+    """Top-level folders the Settings folder picker may show.
+
+    Defaults to the classic /media and /exports mounts plus /host, a spot for
+    mounting a whole drive so users can choose any subfolder from the GUI.
+    Override with NEOCLIP_BROWSE_ROOTS (comma-separated container paths).
+    """
+    raw = os.getenv("NEOCLIP_BROWSE_ROOTS", "/host,/media,/exports")
+    roots: list[Path] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        root = Path(item).resolve()
+        if root == Path("/") or root == DATA_ROOT or root in roots:
+            continue
+        if root.is_dir():
+            roots.append(root)
+    return roots
+
+
+def inside_browse_roots(path: Path) -> bool:
+    for root in browse_roots():
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def folder_writable(path: Path) -> bool:
+    try:
+        with tempfile.NamedTemporaryFile(dir=path, prefix=".neoclip-write-test-"):
+            return True
+    except OSError:
+        return False
+
+
+def folder_status(path: Optional[Path], need_write: bool) -> dict:
+    if path is None:
+        return {"path": "", "ok": False, "message": "Not set"}
+    if not path.is_dir():
+        return {"path": str(path), "ok": False, "message": "Folder not found"}
+    if need_write and not folder_writable(path):
+        return {"path": str(path), "ok": False, "message": "Folder is read-only"}
+    return {"path": str(path), "ok": True, "message": "Ready"}
+
+
+def load_settings() -> tuple[Optional[Path], Optional[Path]]:
+    input_dir: Optional[Path] = DEFAULT_MEDIA_ROOT if DEFAULT_MEDIA_ROOT.is_dir() else None
+    output_dir: Optional[Path] = None
+    if DEFAULT_EXPORT_ROOT.is_dir():
+        output_dir = DEFAULT_EXPORT_ROOT
+    else:
+        try:
+            # Keep 1.1 behaviour: the default export folder is created on demand.
+            DEFAULT_EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
+            output_dir = DEFAULT_EXPORT_ROOT
+        except OSError:
+            output_dir = None
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            if data.get("input_dir"):
+                input_dir = Path(str(data["input_dir"])).resolve()
+            if data.get("output_dir"):
+                output_dir = Path(str(data["output_dir"])).resolve()
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return input_dir, output_dir
+
+
+def save_settings() -> None:
+    payload = {
+        "version": 1,
+        "input_dir": str(MEDIA_ROOT) if MEDIA_ROOT else "",
+        "output_dir": str(EXPORT_ROOT) if EXPORT_ROOT else "",
+    }
+    temporary_file = SETTINGS_FILE.with_suffix(".tmp")
+    temporary_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary_file.replace(SETTINGS_FILE)
+
+
+# None means "not chosen yet"; the GUI still starts and asks for a folder.
+MEDIA_ROOT, EXPORT_ROOT = load_settings()
 
 
 class SourceRequest(BaseModel):
@@ -65,6 +155,16 @@ class ClipRequest(BaseModel):
     name: str = ""
     start_s: float = Field(ge=0, allow_inf_nan=False)
     end_s: float = Field(gt=0, allow_inf_nan=False)
+
+
+class SettingsRequest(BaseModel):
+    input_dir: str = ""
+    output_dir: str = ""
+
+
+class NewFolderRequest(BaseModel):
+    parent: str
+    name: str
 
 
 class RenderRequest(BaseModel):
@@ -114,7 +214,31 @@ def sanitize_filename(value: str) -> str:
     return value or "clip"
 
 
+def require_input_root() -> Path:
+    if MEDIA_ROOT is None or not MEDIA_ROOT.is_dir():
+        raise HTTPException(
+            status_code=409,
+            detail="Choose an input folder in Settings first",
+        )
+    return MEDIA_ROOT
+
+
+def require_output_root() -> Path:
+    if EXPORT_ROOT is None or not EXPORT_ROOT.is_dir():
+        raise HTTPException(
+            status_code=409,
+            detail="Choose an output folder in Settings before rendering",
+        )
+    if not folder_writable(EXPORT_ROOT):
+        raise HTTPException(
+            status_code=409,
+            detail="The output folder is read-only; choose another in Settings",
+        )
+    return EXPORT_ROOT
+
+
 def resolve_media_path(relative_path: str) -> Path:
+    require_input_root()
     candidate = (MEDIA_ROOT / relative_path).resolve()
 
     try:
@@ -228,12 +352,55 @@ def state_response() -> dict:
     }
 
 
+# Queues use paths relative to the input folder, so each input folder keeps
+# its own queue. Switching folders parks the current one here.
+folder_states: dict[str, dict] = {}
+
+
+def input_key() -> str:
+    return str(MEDIA_ROOT) if MEDIA_ROOT else ""
+
+
+def park_current_state() -> None:
+    key = input_key()
+    if key:
+        folder_states[key] = {
+            "source_path": state["source_path"],
+            "queues": state["queues"],
+            "editor_sessions": state["editor_sessions"],
+        }
+
+
+def activate_folder_state() -> None:
+    saved = folder_states.get(input_key()) or {}
+    state["source_path"] = str(saved.get("source_path", ""))
+    queues = saved.get("queues")
+    state["queues"] = (
+        {str(k): v for k, v in queues.items() if isinstance(v, list)}
+        if isinstance(queues, dict)
+        else {}
+    )
+    sessions = saved.get("editor_sessions")
+    state["editor_sessions"] = (
+        {
+            str(k): normalize_editor_session(v)
+            for k, v in sessions.items()
+            if isinstance(v, dict)
+        }
+        if isinstance(sessions, dict)
+        else {}
+    )
+
+
 def save_queue() -> None:
+    park_current_state()
     payload = {
-        "version": 3,
+        "version": 4,
+        "input_dir": input_key(),
         "source_path": state["source_path"],
         "queues": state["queues"],
         "editor_sessions": state["editor_sessions"],
+        "folders": folder_states,
     }
 
     temporary_file = QUEUE_FILE.with_suffix(".tmp")
@@ -250,6 +417,16 @@ def load_queue() -> None:
         if not isinstance(data, dict):
             return
 
+        folders = data.get("folders")
+        if isinstance(folders, dict) and folders:
+            for key, value in folders.items():
+                if isinstance(value, dict):
+                    folder_states[str(key)] = value
+            activate_folder_state()
+            return
+
+        # Version 3 and older files belong to whichever input folder was used
+        # before Settings existed (the /media mount).
         source_path = str(data.get("source_path", ""))
         state["source_path"] = source_path
 
@@ -285,7 +462,7 @@ load_queue()
 
 
 def list_videos() -> list[dict]:
-    if not MEDIA_ROOT.exists():
+    if MEDIA_ROOT is None or not MEDIA_ROOT.is_dir():
         return []
 
     results = []
@@ -378,7 +555,7 @@ async def render_individual(
     video_encoder: str,
     output_dir: Optional[Path] = None,
 ) -> list[Path]:
-    output_dir = output_dir or EXPORT_ROOT / sanitize_filename(source.stem)
+    output_dir = output_dir or require_output_root() / sanitize_filename(source.stem)
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs = []
 
@@ -469,7 +646,8 @@ async def render_reel(
     progress_span: float,
     video_encoder: str,
 ) -> None:
-    output_dir = EXPORT_ROOT / sanitize_filename(source.stem)
+    export_root = require_output_root()
+    output_dir = export_root / sanitize_filename(source.stem)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{prefix}_reel.mp4"
 
@@ -478,7 +656,7 @@ async def render_reel(
 
     # Render sequentially instead of opening N decoders/filter graphs at once.
     # Joining matched H.264/AAC intermediates requires no second video encode.
-    with tempfile.TemporaryDirectory(prefix="reel-", dir=EXPORT_ROOT) as temp:
+    with tempfile.TemporaryDirectory(prefix="reel-", dir=export_root) as temp:
         pieces = await render_individual(
             source,
             clips,
@@ -690,9 +868,9 @@ async def delete_media(request: SourceRequest) -> dict:
         raise HTTPException(
             status_code=409,
             detail=(
-                "The video could not be deleted because /media is read-only or "
-                "the file is locked. In compose.yaml, mount the media folder as "
-                "'/media' or ':rw', not ':ro', then restart the container."
+                "The video could not be deleted because the input folder is "
+                "read-only or the file is locked. Mount it read-write (not "
+                "':ro') in Docker, then restart the container."
             ),
         ) from exc
     except OSError as exc:
@@ -800,6 +978,8 @@ async def start_render(request: RenderRequest) -> dict:
     if render_task and not render_task.done():
         raise HTTPException(status_code=409, detail="A render is already running")
 
+    require_output_root()
+
     if not state["source_path"]:
         raise HTTPException(status_code=400, detail="Select a source video first")
 
@@ -844,8 +1024,8 @@ async def get_render_status() -> dict:
 async def status() -> dict:
     return {
         "status": "online",
-        "media_available": MEDIA_ROOT.exists(),
-        "export_available": EXPORT_ROOT.exists(),
+        "media_available": bool(MEDIA_ROOT and MEDIA_ROOT.is_dir()),
+        "export_available": bool(EXPORT_ROOT and EXPORT_ROOT.is_dir()),
         "ffmpeg_available": shutil.which("ffmpeg") is not None,
         "proxy_height": PROXY_HEIGHT,
         "proxy_directory": str(PROXY_ROOT),
@@ -854,3 +1034,121 @@ async def status() -> dict:
         "active_proxy_processes": len(proxies.processes),
         "pip_note": "Browser/OS support required; open the app directly, not in an embedded frame",
     }
+
+
+# ---------------------------------------------------------------- settings --
+
+
+def settings_response() -> dict:
+    input_status = folder_status(MEDIA_ROOT, need_write=False)
+    output_status = folder_status(EXPORT_ROOT, need_write=True)
+    return {
+        "input": input_status,
+        "output": output_status,
+        "ready": input_status["ok"] and output_status["ok"],
+        "roots": [str(root) for root in browse_roots()],
+        "render_running": bool(render_task and not render_task.done()),
+    }
+
+
+def validate_folder(raw: str, label: str) -> Path:
+    if not raw.strip():
+        raise HTTPException(400, f"Choose an {label} folder")
+    path = Path(raw.strip()).resolve()
+    if not inside_browse_roots(path):
+        allowed = ", ".join(str(r) for r in browse_roots()) or "(none mounted)"
+        raise HTTPException(
+            400, f"The {label} folder must be inside one of: {allowed}"
+        )
+    if not path.is_dir():
+        raise HTTPException(404, f"The {label} folder does not exist")
+    return path
+
+
+@app.get("/api/settings")
+async def get_settings() -> dict:
+    return await asyncio.to_thread(settings_response)
+
+
+@app.post("/api/settings")
+async def update_settings(request: SettingsRequest) -> dict:
+    global MEDIA_ROOT, EXPORT_ROOT
+
+    if render_task and not render_task.done():
+        raise HTTPException(409, "Wait for the current render to finish first")
+
+    new_input = validate_folder(request.input_dir, "input")
+    new_output = validate_folder(request.output_dir, "output")
+    if not folder_writable(new_output):
+        raise HTTPException(409, "The output folder is read-only")
+    if new_output == new_input:
+        raise HTTPException(400, "Use different input and output folders")
+    if new_output.is_relative_to(new_input):
+        # Rendered clips would otherwise show up as new source videos.
+        raise HTTPException(
+            400, "The output folder cannot be inside the input folder"
+        )
+
+    if new_input != MEDIA_ROOT:
+        save_queue()  # park this folder's queue before switching
+        for job_id in list(proxies.tasks):
+            await proxies.stop(job_id)
+        MEDIA_ROOT = new_input
+        activate_folder_state()
+    EXPORT_ROOT = new_output
+    save_settings()
+    save_queue()
+    return {**settings_response(), "state": state_response()}
+
+
+@app.get("/api/folders")
+async def list_folders(path: str = "") -> dict:
+    roots = browse_roots()
+    if not path:
+        return {
+            "path": "",
+            "parent": None,
+            "folders": [{"name": str(r), "path": str(r)} for r in roots],
+        }
+
+    folder = Path(path).resolve()
+    if not inside_browse_roots(folder):
+        raise HTTPException(400, "That folder is outside the mounted folders")
+    if not folder.is_dir():
+        raise HTTPException(404, "Folder not found")
+
+    def read() -> list[dict]:
+        entries = []
+        try:
+            for child in folder.iterdir():
+                if child.name.startswith(".") or not child.is_dir():
+                    continue
+                entries.append({"name": child.name, "path": str(child)})
+        except OSError as exc:
+            raise HTTPException(403, f"Cannot open folder: {exc}") from exc
+        entries.sort(key=lambda e: e["name"].lower())
+        return entries
+
+    parent = None if folder in roots else str(folder.parent)
+    return {
+        "path": str(folder),
+        "parent": parent,
+        "writable": folder_writable(folder),
+        "folders": await asyncio.to_thread(read),
+    }
+
+
+@app.post("/api/folders")
+async def create_folder(request: NewFolderRequest) -> dict:
+    parent = Path(request.parent).resolve()
+    if not inside_browse_roots(parent) or not parent.is_dir():
+        raise HTTPException(400, "Choose a folder inside the mounted folders")
+    name = sanitize_filename(request.name)
+    target = parent / name
+    try:
+        target.mkdir(exist_ok=False)
+    except FileExistsError as exc:
+        raise HTTPException(409, "A folder with that name already exists") from exc
+    except OSError as exc:
+        raise HTTPException(409, f"Cannot create folder: {exc}") from exc
+    return {"path": str(target), "name": name}

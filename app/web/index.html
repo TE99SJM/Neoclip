@@ -208,12 +208,83 @@
         .clip-add-row button { padding: 10px 18px; }
         .brand { display: flex; gap: 10px; align-items: center; }
         .brand svg { width: 28px; height: 28px; color: #83cfff; }
+        .topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .topbar h1 { margin: 16px 0; }
+        .settings-button { padding: 10px 16px; }
+        .notice { margin-top: 12px; padding: 12px; border-radius: 10px; background: #3a2f10; color: #ffe7a3; border: 1px solid #7a6424; }
+        .notice button { margin-top: 8px; }
+        .folder-row { margin-top: 12px; }
+        .folder-row label { display: block; font-weight: 600; }
+        .folder-input { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 6px; }
+        .folder-input input { width: 100%; font-family: ui-monospace, monospace; font-size: 14px; }
+        .folder-state { margin: 4px 0 0; font-size: 13px; }
+        .folder-state.ok { color: #8fdc9a; }
+        .folder-state.bad { color: #ff9a9a; }
+        .picker { margin-top: 12px; padding: 10px; background: #151515; border: 1px solid #333; border-radius: 8px; }
+        .picker-path { font-family: ui-monospace, monospace; font-size: 13px; color: #ccc; overflow-wrap: anywhere; }
+        .picker-list { max-height: 280px; overflow: auto; margin-top: 8px; }
+        .picker-list button { display: block; width: 100%; margin: 4px 0; text-align: left; min-height: 40px; overflow-wrap: anywhere; }
+        .picker-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+        .primary { background: #1f6fb2; color: #fff; }
+        .primary:hover { background: #2780cc; }
+        @media (max-width: 520px) { .picker-actions { grid-template-columns: 1fr; } }
     </style>
 </head>
 
 <body>
 <main>
+    <div class="topbar">
     <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip Remote</h1>
+    <button type="button" class="settings-button" onclick="toggleSettings()"
+            aria-expanded="false" aria-controls="settingsPanel" id="settingsButton">Settings</button>
+    </div>
+
+    <div id="setupNotice" class="notice hidden" role="status">
+        <span id="setupNoticeText">Choose your input and output folders in Settings.</span><br>
+        <button type="button" onclick="openSettings()">Open Settings</button>
+    </div>
+
+    <section id="settingsPanel" class="panel hidden" aria-labelledby="settingsTitle">
+        <h2 id="settingsTitle">Input &amp; Output Folders</h2>
+        <p class="status">Pick the folder NeoClip reads videos from and the folder rendered clips are saved to. Choices are saved and restored on the next launch.</p>
+
+        <div class="folder-row">
+            <label for="inputDir">Input folder</label>
+            <div class="folder-input">
+                <input id="inputDir" placeholder="Not set" spellcheck="false" autocomplete="off">
+                <button type="button" onclick="openPicker('input')">Browse…</button>
+            </div>
+            <p id="inputDirState" class="folder-state"></p>
+        </div>
+
+        <div class="folder-row">
+            <label for="outputDir">Output folder</label>
+            <div class="folder-input">
+                <input id="outputDir" placeholder="Not set" spellcheck="false" autocomplete="off">
+                <button type="button" onclick="openPicker('output')">Browse…</button>
+            </div>
+            <p id="outputDirState" class="folder-state"></p>
+        </div>
+
+        <div id="picker" class="picker hidden" aria-live="polite">
+            <strong id="pickerTitle">Choose a folder</strong>
+            <div id="pickerPath" class="picker-path"></div>
+            <div id="pickerList" class="picker-list"></div>
+            <div class="picker-actions">
+                <button type="button" class="primary" id="pickerUse" onclick="useCurrentFolder()">Use this folder</button>
+                <button type="button" id="pickerNew" onclick="createFolder()">New folder</button>
+                <button type="button" onclick="closePicker()">Close</button>
+            </div>
+            <p id="pickerStatus" class="status"></p>
+        </div>
+
+        <div class="grid-2">
+            <button type="button" class="primary" onclick="saveSettings()">Save</button>
+            <button type="button" onclick="cancelSettings()">Cancel</button>
+        </div>
+        <p id="settingsStatus" class="status" role="status" aria-live="polite"></p>
+        <p id="settingsRoots" class="status"></p>
+    </section>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
@@ -821,8 +892,10 @@
             box.innerHTML = "";
 
             document.getElementById("fileStatus").textContent =
-                `${files.length} video file(s) found — ` +
-                `${savedState.total_queued_clips} unsaved clip(s) queued`;
+                savedSettings && !savedSettings.input.ok
+                    ? "No input folder selected — choose one in Settings."
+                    : `${files.length} video file(s) found — ` +
+                      `${savedState.total_queued_clips} unsaved clip(s) queued`;
 
             for (const file of files) {
                 const button = document.createElement("button");
@@ -1651,10 +1724,200 @@ This cannot be undone.`
         return div.innerHTML;
     }
 
+    // ------------------------------------------------------------ settings --
+    let savedSettings = null;
+    let pickerTarget = null;
+    let pickerPath = "";
+
+    function setFolderState(id, info) {
+        const el = document.getElementById(id);
+        el.textContent = info.ok ? "Ready" : info.message;
+        el.className = "folder-state " + (info.ok ? "ok" : "bad");
+    }
+
+    function renderSettings(data) {
+        savedSettings = data;
+        document.getElementById("inputDir").value = data.input.path;
+        document.getElementById("outputDir").value = data.output.path;
+        setFolderState("inputDirState", data.input);
+        setFolderState("outputDirState", data.output);
+        document.getElementById("settingsRoots").textContent = data.roots.length
+            ? "Folders available to NeoClip: " + data.roots.join(", ")
+            : "No folders are mounted into the container. Add a volume such as -v /path/on/server:/host and restart.";
+
+        const notice = document.getElementById("setupNotice");
+        if (data.ready) {
+            notice.classList.add("hidden");
+        } else {
+            const problems = [];
+            for (const [label, info] of [["input", data.input], ["output", data.output]]) {
+                if (info.ok) continue;
+                problems.push(info.message === "Not set"
+                    ? `choose your ${label} folder`
+                    : `your ${label} folder is ${info.message === "Folder not found" ? "missing" : "read-only"}, choose another`);
+            }
+            const text = problems.join("; and ");
+            document.getElementById("setupNoticeText").textContent =
+                text.charAt(0).toUpperCase() + text.slice(1) + " in Settings.";
+            notice.classList.remove("hidden");
+        }
+    }
+
+    async function loadSettings() {
+        try {
+            renderSettings(await api("/api/settings"));
+        } catch (error) {
+            document.getElementById("settingsStatus").textContent = error.message;
+        }
+        return savedSettings;
+    }
+
+    function openSettings() {
+        document.getElementById("settingsPanel").classList.remove("hidden");
+        document.getElementById("settingsButton").setAttribute("aria-expanded", "true");
+        document.getElementById("settingsPanel").scrollIntoView({behavior: "smooth", block: "start"});
+        loadSettings();
+    }
+
+    function toggleSettings() {
+        const panel = document.getElementById("settingsPanel");
+        if (panel.classList.contains("hidden")) openSettings();
+        else cancelSettings();
+    }
+
+    function cancelSettings() {
+        closePicker();
+        if (savedSettings) renderSettings(savedSettings);
+        document.getElementById("settingsStatus").textContent = "";
+        document.getElementById("settingsPanel").classList.add("hidden");
+        document.getElementById("settingsButton").setAttribute("aria-expanded", "false");
+    }
+
+    async function saveSettings() {
+        const status = document.getElementById("settingsStatus");
+        const previousInput = savedSettings ? savedSettings.input.path : "";
+        status.textContent = "Saving…";
+        try {
+            const data = await api("/api/settings", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    input_dir: document.getElementById("inputDir").value,
+                    output_dir: document.getElementById("outputDir").value
+                })
+            });
+            renderSettings(data);
+            closePicker();
+            status.textContent = "Saved.";
+            if (data.input.path !== previousInput) {
+                // A different input folder has its own videos and queue.
+                resetEditorForFolderChange();
+                await loadFiles({restoreLastSession: true});
+                await loadState();
+            }
+        } catch (error) {
+            status.textContent = error.message;
+        }
+    }
+
+    function resetEditorForFolderChange() {
+        try {
+            const video = document.getElementById("video");
+            video.pause();
+            proxyWatchToken += 1;  // stop watchers for the old folder's video
+            destroyHls();
+            video.removeAttribute("src");
+            video.load();
+        } catch (_) {}
+        currentSourcePath = null;
+        document.getElementById("playerSection").classList.add("hidden");
+    }
+
+    async function openPicker(target) {
+        pickerTarget = target;
+        document.getElementById("pickerTitle").textContent =
+            target === "input" ? "Choose the input folder" : "Choose the output folder";
+        document.getElementById("picker").classList.remove("hidden");
+        const current = document.getElementById(target === "input" ? "inputDir" : "outputDir").value;
+        await browseTo(current);
+    }
+
+    function closePicker() {
+        document.getElementById("picker").classList.add("hidden");
+        pickerTarget = null;
+    }
+
+    async function browseTo(path) {
+        const list = document.getElementById("pickerList");
+        const status = document.getElementById("pickerStatus");
+        status.textContent = "";
+        let data;
+        try {
+            data = await api("/api/folders?path=" + encodeURIComponent(path || ""));
+        } catch (error) {
+            if (path) return browseTo("");  // saved folder gone: start at the top
+            status.textContent = error.message;
+            return;
+        }
+        pickerPath = data.path;
+        document.getElementById("pickerPath").textContent = data.path || "Mounted folders";
+        document.getElementById("pickerUse").disabled = !data.path;
+        document.getElementById("pickerNew").disabled = !data.path || data.writable === false;
+        if (data.path && data.writable === false && pickerTarget === "output") {
+            status.textContent = "This folder is read-only; rendered clips cannot be saved here.";
+        }
+        list.innerHTML = "";
+        if (data.path) {
+            const up = document.createElement("button");
+            up.type = "button";
+            up.textContent = "Up one level";
+            up.onclick = () => browseTo(data.parent || "");
+            list.appendChild(up);
+        }
+        for (const folder of data.folders) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = folder.name + " /";
+            button.onclick = () => browseTo(folder.path);
+            list.appendChild(button);
+        }
+        if (!data.folders.length) {
+            const empty = document.createElement("p");
+            empty.className = "status";
+            empty.textContent = data.path ? "No subfolders." : "No folders are mounted into the container.";
+            list.appendChild(empty);
+        }
+    }
+
+    function useCurrentFolder() {
+        if (!pickerPath || !pickerTarget) return;
+        document.getElementById(pickerTarget === "input" ? "inputDir" : "outputDir").value = pickerPath;
+        document.getElementById("settingsStatus").textContent = "Click Save to apply.";
+        closePicker();
+    }
+
+    async function createFolder() {
+        if (!pickerPath) return;
+        const name = prompt("New folder name:");
+        if (!name || !name.trim()) return;
+        try {
+            const data = await api("/api/folders", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({parent: pickerPath, name: name.trim()})
+            });
+            await browseTo(data.path);
+        } catch (error) {
+            document.getElementById("pickerStatus").textContent = error.message;
+        }
+    }
+
     async function initializeEditor() {
         if (!window.NEOCLIP_PREVIEW && "serviceWorker" in navigator && window.isSecureContext) {
             navigator.serviceWorker.register("/sw.js").catch(() => {});
         }
+        const settings = await loadSettings();
+        if (settings && !settings.ready) openSettings();
         await loadFiles({restoreLastSession: true});
 
         if (!currentSourcePath) {
