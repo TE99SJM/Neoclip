@@ -55,7 +55,7 @@ Do not present a public live demo connected to private media. Prefer a local scr
 
 ## Suggested rollout checklist
 
-- [ ] Choose and add a software license before describing the project as open source
+- [x] Add the MIT open-source license (see [LICENSE](../LICENSE))
 - [ ] Simplify the nested repository structure
 - [ ] Verify installation on a clean test machine
 - [ ] Resolve or document Docker CUDA/FFmpeg build limitations
