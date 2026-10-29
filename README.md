@@ -76,4 +76,4 @@ NeoClip is available to view and evaluate on GitHub. If you find the project use
 
 ## License
 
-**A license has not yet been selected.** Publicly visible source is not automatically open-source licensed. Until a license is added, do not assume permission to redistribute, modify, or use the code commercially. The maintainer should choose a license before promoting NeoClip as open-source software.
+NeoClip is released under the **MIT License**. You may use, copy, modify, and distribute the software, including commercially, provided you preserve the copyright and license notice. See [LICENSE](LICENSE) for the full terms.
