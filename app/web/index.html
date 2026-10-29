@@ -228,6 +228,8 @@
         .primary { background: #1f6fb2; color: #fff; }
         .primary:hover { background: #2780cc; }
         @media (max-width: 520px) { .picker-actions { grid-template-columns: 1fr; } }
+        .legal { margin: 24px 0 8px; font-size: 13px; color: #8a8a8a; text-align: center; line-height: 1.6; }
+        .legal a { color: #83cfff; }
     </style>
 </head>
 
@@ -401,6 +403,11 @@
         <p id="fileStatus" class="status">Loading videos…</p>
         <div id="files"></div>
     </section>
+    <footer class="legal">
+        NeoClip &middot; Copyright &copy; 2026 TE99SJM &middot; Free software under the
+        <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">GNU AGPLv3</a>
+        &middot; <a href="https://github.com/TE99SJM/Neoclip" target="_blank" rel="noopener">Source code</a>
+    </footer>
 </main>
 
 <script>

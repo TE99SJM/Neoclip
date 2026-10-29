@@ -48,10 +48,12 @@ folders from the GUI.
 
 ## License
 
-NeoClip is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+Copyright (C) 2026 TE99SJM
 
-- **Free for noncommercial use.** Personal use, hobby projects, study, and use by schools, charities, and other nonprofit or public organizations are allowed. You may fork, modify, and share it for those purposes.
-- **No commercial use without permission.** Selling NeoClip, offering it as a paid service, or using it in a for-profit business requires a separate commercial license from the maintainer. Open an [issue](https://github.com/TE99SJM/Neoclip/issues) to ask.
-- Keep the `LICENSE` file and its `Required Notice:` line with any copy you share.
+NeoClip is free, open-source software licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPLv3).
 
-NeoClip is source-available, not OSI open source, because it restricts commercial use.
+- **Use it for anything, including paid work.** Individuals, schools, and businesses can use NeoClip, including to make money from the videos they produce.
+- **Changes have to stay open.** If you share a modified NeoClip, or run a modified version as a website or service other people use, you must make your full source code available to them under the AGPLv3. You can't turn NeoClip into a closed, private product.
+- **Keep the notices.** Keep the `LICENSE` file and copyright notices, mark what you changed, and keep the link to the source code in the app.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the [LICENSE](LICENSE) for details.
