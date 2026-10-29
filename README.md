@@ -68,7 +68,7 @@ The current repository contains a backup-style source directory with two copies 
 
 Found a bug or have an improvement in mind? [Open an issue](https://github.com/TE99SJM/Neoclip/issues/new/choose).
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing changes. Project promotion and demo guidance live in [docs/PROMOTION.md](docs/PROMOTION.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing changes.
 
 ## Support development
 
