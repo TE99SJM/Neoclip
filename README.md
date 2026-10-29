@@ -45,3 +45,13 @@ until you save folders in Settings. Existing queues carry over to `/media`.
 
 Mount `/host` read-write if you want to delete source videos or create new
 folders from the GUI.
+
+## License
+
+NeoClip is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+- **Free for noncommercial use.** Personal use, hobby projects, study, and use by schools, charities, and other nonprofit or public organizations are allowed. You may fork, modify, and share it for those purposes.
+- **No commercial use without permission.** Selling NeoClip, offering it as a paid service, or using it in a for-profit business requires a separate commercial license from the maintainer. Open an [issue](https://github.com/TE99SJM/Neoclip/issues) to ask.
+- Keep the `LICENSE` file and its `Required Notice:` line with any copy you share.
+
+NeoClip is source-available, not OSI open source, because it restricts commercial use.
