@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -30,7 +30,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip Web", lifespan=lifespan)
-APP_BUILD = "2.0.0"
+APP_BUILD = "2.0.3"
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
@@ -285,36 +285,33 @@ load_queue()
 
 
 def list_videos() -> list[dict]:
-    if not MEDIA_ROOT.exists():
-        return []
-
+    """Poll the entire tree: remote SMB/NFS writes may not emit local events."""
     results = []
-
-    for path in MEDIA_ROOT.rglob("*"):
-        if not path.is_file():
-            continue
-
-        if path.name.startswith("."):
-            continue
-
-        if path.suffix.lower() not in VIDEO_EXTENSIONS:
-            continue
-
-        try:
-            if path.stat().st_size < 1:
+    # os.walk skips inaccessible/disappearing directories without aborting the
+    # rest of the library. Do not follow directory symlinks outside the mount.
+    for directory, folders, names in os.walk(MEDIA_ROOT):
+        folders[:] = [name for name in folders if not name.startswith(".")]
+        for name in names:
+            path = Path(directory) / name
+            if name.startswith(".") or path.suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
-        except OSError:
-            continue
-
-        relative = path.relative_to(MEDIA_ROOT).as_posix()
-
-        results.append(
-            {
-                "name": path.name,
+            try:
+                path.resolve().relative_to(MEDIA_ROOT)
+                stat = path.stat()
+                if not path.is_file() or stat.st_size < 1:
+                    continue
+            except (OSError, ValueError):
+                # A transfer/rename/delete can race with any individual stat.
+                continue
+            relative = path.relative_to(MEDIA_ROOT).as_posix()
+            results.append({
+                "name": name,
                 "path": relative,
                 "original_url": f"/api/media?path={quote(relative)}",
-            }
-        )
+                "size_bytes": stat.st_size,
+                # Keep nanoseconds exact when the browser compares snapshots.
+                "modified_ns": str(stat.st_mtime_ns),
+            })
 
     results.sort(key=lambda item: item["path"].lower())
     return results
@@ -624,8 +621,10 @@ async def home() -> HTMLResponse:
 
 
 @app.get("/api/files")
-async def get_files() -> list[dict]:
-    return await asyncio.to_thread(list_videos)
+async def get_files() -> JSONResponse:
+    return JSONResponse(
+        await asyncio.to_thread(list_videos), headers={"Cache-Control": "no-store"}
+    )
 
 
 @app.get("/api/media")
@@ -652,6 +651,11 @@ async def select_source(request: SourceRequest) -> dict:
         if request.current_time is not None
         else session["current_time"]
     )
+    duration, _ = await proxies.probe(resolve_media_path(request.path))
+    if start >= duration - 0.25:
+        start = 0
+        session["current_time"] = 0
+        save_queue()
     proxy = await proxies.start(request.path, start)
     return {**state_response(), "proxy": proxy}
 

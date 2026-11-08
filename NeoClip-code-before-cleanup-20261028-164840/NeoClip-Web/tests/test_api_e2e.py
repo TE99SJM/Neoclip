@@ -89,10 +89,30 @@ def test_real_ffmpeg_resume_and_exports(tmp_path, monkeypatch):
         assert same["id"] == job["id"]
         # Going earlier starts an independent offset window.
         earlier = client.post(
-            "/api/proxy/start", json={"path": "sample.mp4", "current_time": 2}
+            "/api/proxy/start", json={"path": "sample.mp4", "current_time": 0}
         ).json()
-        assert earlier["start_seconds"] == 2
+        assert earlier["start_seconds"] == 0
         assert earlier["id"] != job["id"]
+        deadline = time.time() + 25
+        while time.time() < deadline:
+            earlier = client.get("/api/proxy/status", params={"id": earlier["id"]}).json()
+            if earlier["status"] == "ready":
+                break
+            assert earlier["status"] != "error", earlier.get("error")
+            time.sleep(0.1)
+        assert earlier["status"] == "ready"
+        assert "#EXT-X-ENDLIST" in client.get(earlier["url"]).text
+        # The generated stream includes the first second, not an end-only window.
+        segment_path = main.proxies.directory(earlier) / "segment_00000.ts"
+        timing = json.loads(subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=start_time", "-of", "json", str(segment_path),
+        ]))
+        assert 0 <= float(timing["streams"][0]["start_time"]) < 0.1
+        replay = client.post(
+            "/api/proxy/start", json={"path": "sample.mp4", "current_time": 0}
+        ).json()
+        assert replay["id"] == earlier["id"]
         for start, end, name in [(6, 7, "A's clip"), (8, 9.5, "B")]:
             response = client.post(
                 "/api/clips", json={"name": name, "start_s": start, "end_s": end}

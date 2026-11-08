@@ -19,6 +19,24 @@ NeoClip is a self-hosted video-clipping web interface built with **Python, FastA
 - **Self-hosted media:** Read source files and write exports to directories on your own machine or server.
 - **FFmpeg processing:** Encoding pipeline checks for accelerated options and has a CPU fallback.
 
+## Playback and automatic file updates (v2.0.3)
+
+- At the end of a video, **Replay** returns to the original video's beginning,
+  including when the current preview starts partway through the source.
+- **Back to start** and **Go to time → 00:01** can reach the first frame and first
+  second. Playback recovery treats zero as a valid timestamp.
+- Finished videos reopen at the beginning; clip queues and marks are preserved.
+- While the page is visible, the file list rescans the configured `MEDIA_ROOT`
+  and its subfolders every five seconds. New transfers, renames, modifications,
+  and deletions appear automatically, subject to scan time and NAS caching.
+  Polling also works with SMB/NFS mounts that do not deliver local file events.
+- Returning to the tab refreshes the list immediately. Refreshes do not reload
+  the active video or reset edits, and failed requests retry automatically.
+
+Both checked-in application copies include these fixes. Rebuild/restart the
+deployment using the updated application directory, then reload the web page.
+Existing media/export mounts and saved editing data do not need to change.
+
 ## Screenshots and demo
 
 Screenshots and a short walkthrough are being prepared.

@@ -22,7 +22,7 @@ function setup() {
             removeAttribute(){throw Error("src must not be removed")}},
         hls: {startLoad(t){calls.loads.push(t)}},
         document: {getElementById(){return {textContent:""}}},
-        formatClock: String, updateSourceClock(){}, startHeartbeat(){},
+        formatClock: String, updateSourceClock(){}, updatePlaybackButton(){}, startHeartbeat(){},
         setPlayerLoading(){}, clearPlayerLoading(){}, clearMediaLoadingIfReady(){},
         scheduleEditorSessionSave(){calls.saves++},
         sourceTime(){return ctx.proxyOffset+ctx.video.currentTime},

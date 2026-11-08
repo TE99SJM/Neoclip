@@ -68,8 +68,9 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
         userWantsPlayback: true, startHeartbeat(){heartbeats++;},
         hls: {startLoad(t){loads.push(t);}},
     });
-    vm.runInContext(html.slice(html.indexOf("    function resumeVisiblePlayer("),
-                               html.indexOf('    window.addEventListener("pageshow"')), ctx);
+    const resumeStart = html.indexOf("    function resumeVisiblePlayer(");
+    vm.runInContext(html.slice(resumeStart,
+                               html.indexOf('    window.addEventListener("pageshow"', resumeStart)), ctx);
     ctx.resumeVisiblePlayer();
     assert.equal(heartbeats, 1);
     assert.deepEqual(loads, [40]);

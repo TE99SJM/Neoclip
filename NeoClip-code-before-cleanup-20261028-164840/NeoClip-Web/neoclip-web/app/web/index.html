@@ -208,7 +208,7 @@
 <body>
 <main>
     <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip Remote</h1>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.0.2</p>
+    <p class="status">GPU-first editing · Resume-aware previews · v2.0.3</p>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
@@ -238,10 +238,11 @@
         <div class="grid-5 player-controls">
             <button class="back-30" onclick="skip(-30)">−30</button>
             <button class="back-10" onclick="skip(-10)">−10</button>
-            <button class="play-pause" onclick="togglePlayback()">Play/Pause</button>
+            <button id="playPauseButton" class="play-pause" onclick="togglePlayback()">Play/Pause</button>
             <button class="forward-10" onclick="skip(10)">+10</button>
             <button class="forward-30" onclick="skip(30)">+30</button>
         </div>
+        <button class="field" type="button" onclick="seekSource(0)">Back to start</button>
 
         <div class="panel speed-control">
             <label for="playbackSpeed">Playback speed</label>
@@ -553,7 +554,7 @@
                     // decoder hiccups instead of leaving the video paused.
                     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
                         try {
-                            hls.startLoad(video.currentTime || -1);
+                            hls.startLoad(Math.max(0, Number(video.currentTime) || 0));
                             return;
                         } catch (_) {}
                     }
@@ -618,11 +619,6 @@
     async function seekVideoToSavedTime(seconds, watchToken = proxyWatchToken) {
         const requestedTime = Math.max(0, (Number(seconds) || 0) - proxyOffset);
 
-        if (requestedTime === 0) {
-            video.currentTime = 0;
-            return proxyOffset;
-        }
-
         const deadline = Date.now() + 30000;
         let lastError = null;
 
@@ -672,7 +668,8 @@
                 const actualTime = Number(video.currentTime);
                 if (
                     Number.isFinite(actualTime) &&
-                    Math.abs(actualTime - target) <= 2
+                    !video.seeking && video.readyState >= 2 &&
+                    Math.abs(actualTime - target) <= 0.25
                 ) {
                     return proxyOffset + actualTime;
                 }
@@ -728,7 +725,7 @@
 
         return {
             path: currentSourcePath,
-            current_time: Math.max(0, Number(currentTime) || 0),
+            current_time: playbackEnded ? 0 : Math.max(0, Number(currentTime) || 0),
             mark_in: optionalSessionTime(markInSeconds),
             mark_out: optionalSessionTime(markOutSeconds),
             clip_name: document.getElementById("clipName").value,
@@ -814,54 +811,84 @@
         updateMarkStatus();
     }
 
-    async function loadFiles({restoreLastSession = false} = {}) {
+    let fileLoadPromise = null;
+    let fileListFingerprint = "";
+    let fileRefreshTimer = null;
+
+    function loadFiles(options = {}) {
+        // Slow NAS scans and foreground/manual refreshes share one request.
+        if (!fileLoadPromise) {
+            fileLoadPromise = refreshFiles(options).finally(() => {
+                fileLoadPromise = null;
+            });
+        }
+        return fileLoadPromise;
+    }
+
+    async function refreshFiles({restoreLastSession = false} = {}) {
         try {
             const [files, savedState] = await Promise.all([
-                api("/api/files"),
-                api("/api/state")
+                api("/api/files", {cache: "no-store"}),
+                api("/api/state", {cache: "no-store"})
             ]);
-
-            const box = document.getElementById("files");
-            box.innerHTML = "";
-
+            const fingerprint = JSON.stringify([files, savedState.clip_counts]);
             document.getElementById("fileStatus").textContent =
                 `${files.length} video file(s) found — ` +
-                `${savedState.total_queued_clips} unsaved clip(s) queued`;
+                `${savedState.total_queued_clips} unsaved clip(s) queued · Auto-refresh on`;
 
-            for (const file of files) {
-                const button = document.createElement("button");
-                button.className = "file-button";
-
-                const queuedCount = savedState.clip_counts[file.path] || 0;
-                const queuedText = queuedCount
-                    ? ` — ${queuedCount} queued clip${queuedCount === 1 ? "" : "s"}`
-                    : "";
-
-                button.innerHTML =
-                    `<strong>${escapeHtml(file.name)}${queuedText}</strong>` +
-                    `<span class="path">${escapeHtml(file.path)}</span>`;
-
-                button.onclick = () => selectVideo(file);
-                box.appendChild(button);
+            if (fingerprint !== fileListFingerprint) {
+                const box = document.getElementById("files");
+                const scrollTop = box.scrollTop;
+                box.innerHTML = "";
+                for (const file of files) {
+                    const button = document.createElement("button");
+                    button.className = "file-button";
+                    const queuedCount = savedState.clip_counts[file.path] || 0;
+                    const queuedText = queuedCount
+                        ? ` — ${queuedCount} queued clip${queuedCount === 1 ? "" : "s"}` : "";
+                    button.innerHTML =
+                        `<strong>${escapeHtml(file.name)}${queuedText}</strong>` +
+                        `<span class="path">${escapeHtml(file.path)}</span>`;
+                    button.onclick = () => selectVideo(file);
+                    box.appendChild(button);
+                }
+                box.scrollTop = scrollTop;
+                fileListFingerprint = fingerprint;
             }
-
+            // Background changes update only the list, never the active player,
+            // marks, queue, playback position or current editing session.
             if (restoreLastSession && savedState.source_path) {
-                const previousFile = files.find(
-                    file => file.path === savedState.source_path
-                );
-
+                const previousFile = files.find(file => file.path === savedState.source_path);
                 if (previousFile) {
                     await selectVideo(previousFile, {
-                        session: savedState.current_session,
-                        autoplay: false,
-                        scroll: false
+                        session: savedState.current_session, autoplay: false, scroll: false
                     });
                 }
             }
         } catch (error) {
-            document.getElementById("fileStatus").textContent = error.message;
+            // Keep the last successful listing and retry after outages.
+            document.getElementById("fileStatus").textContent =
+                `${error.message} — automatic refresh will retry`;
         }
     }
+
+    function startFileUpdates() {
+        if (fileRefreshTimer !== null) return;
+        fileRefreshTimer = setInterval(() => {
+            if (document.visibilityState !== "hidden") void loadFiles();
+        }, 5000);
+    }
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "hidden") void loadFiles();
+    });
+    window.addEventListener("pageshow", event => {
+        startFileUpdates();
+        if (event.persisted) void loadFiles();
+    });
+    window.addEventListener("pagehide", () => {
+        clearInterval(fileRefreshTimer);
+        fileRefreshTimer = null;
+    });
 
     let proxyWatchToken = 0;
     let currentlyUsingProxy = false;
@@ -931,13 +958,13 @@
     // This handles brief network gaps without requiring the user to press play.
     video.addEventListener("waiting", () => {
         if (hls) {
-            try { hls.startLoad(video.currentTime || -1); } catch (_) {}
+            try { hls.startLoad(Math.max(0, Number(video.currentTime) || 0)); } catch (_) {}
         }
     });
 
     video.addEventListener("stalled", () => {
         if (hls) {
-            try { hls.startLoad(video.currentTime || -1); } catch (_) {}
+            try { hls.startLoad(Math.max(0, Number(video.currentTime) || 0)); } catch (_) {}
         }
     });
 
@@ -1115,6 +1142,8 @@ This cannot be undone.`
         stopHeartbeat();
         currentSourcePath = file.path;
         activeFile = file;
+        playbackEnded = false;
+        updatePlaybackButton();
         document.getElementById("playerSection").classList.remove("hidden");
         document.getElementById("selectedFile").textContent = `${file.path}: preparing preview`;
 
@@ -1125,7 +1154,7 @@ This cannot be undone.`
         });
 
         applyEditorSession(
-            options.session || selectedState.current_session || {}
+            selectedState.current_session || options.session || {}
         );
         currentProxy = selectedState.proxy;
         proxyOffset = currentProxy.start_seconds;
@@ -1325,12 +1354,44 @@ This cannot be undone.`
         );
     }
 
+    let playbackEnded = false;
+
+    function updatePlaybackButton() {
+        document.getElementById("playPauseButton").textContent =
+            playbackEnded ? "Replay" : "Play/Pause";
+    }
+
+    video.addEventListener("ended", () => {
+        if (!currentlyUsingProxy || restoringPlayhead) return;
+        playbackEnded = true;
+        updatePlaybackButton();
+        // Preserve marks and queue, but do not reopen a finished video at EOF.
+        scheduleEditorSessionSave(true);
+    });
+    video.addEventListener("play", () => {
+        // Native controls/PiP may reset only the current proxy window on play.
+        // Route replay through the original-video timeline instead.
+        if (playbackEnded && !restoringPlayhead) {
+            void seekSource(0, {autoplay: true});
+        }
+    });
+    video.addEventListener("seeked", () => {
+        if (playbackEnded && !video.ended && video.paused && !restoringPlayhead) {
+            playbackEnded = false;
+            updatePlaybackButton();
+        }
+    });
+
     function togglePlayback() {
+        if (playbackEnded || video.ended) {
+            return seekSource(0, {autoplay: true});
+        }
         if (video.paused) {
-            video.play().catch(error => {
+            return video.play().catch(error => {
                 document.getElementById("pipHelp").textContent = error.message;
             });
-        } else video.pause();
+        }
+        video.pause();
     }
 
     function updatePictureInPictureButton() {
@@ -1417,16 +1478,20 @@ This cannot be undone.`
     }
 
     async function seekWithinProxy(target, revision) {
-        const local = Math.max(0, target - proxyOffset);
+        const requested = Math.max(0, target - proxyOffset);
         restoringPlayhead = true;
         document.getElementById("selectedFile").textContent =
             `${activeFile.path}: seeking to ${formatClock(target)} in the existing proxy`;
         const deadline = Date.now() + 30000;
         let assigned = false;
         while (Date.now() < deadline && revision === seekRevision) {
+            // Native HLS may begin a few milliseconds after zero. Never clamp
+            // to a later buffered range: hls.js must reload those old segments.
+            const first = video.seekable?.length ? video.seekable.start(0) : 0;
+            const local = first < 0.5 ? Math.max(requested, first) : requested;
             // hls.js can load a server-side segment even when it is outside
             // video.seekable. Native HLS may need its playlist refresh first.
-            if (!assigned || Math.abs(video.currentTime - local) > 1) {
+            if (!assigned || Math.abs(video.currentTime - local) > 0.25) {
                 try {
                     video.currentTime = local;
                     if (hls) hls.startLoad(local);
@@ -1434,7 +1499,7 @@ This cannot be undone.`
                 } catch (_) {}
             }
             if (assigned && !video.seeking && video.readyState >= 2 &&
-                    Math.abs(video.currentTime - local) < 1) {
+                    Math.abs(video.currentTime - local) <= 0.25) {
                 pendingResumeSeconds = target;
                 if (seekPlaybackWanted && video.paused) {
                     try { await video.play(); } catch (error) {
@@ -1452,9 +1517,12 @@ This cannot be undone.`
         }
     }
 
-    async function seekSource(seconds) {
-        if (!activeFile || selectionBusy) return;
-        if (!seekIntentActive) seekPlaybackWanted = !video.paused;
+    async function seekSource(seconds, {autoplay} = {}) {
+        if (!activeFile || !currentProxy || selectionBusy) return;
+        playbackEnded = false;
+        updatePlaybackButton();
+        if (autoplay !== undefined) seekPlaybackWanted = autoplay;
+        else if (!seekIntentActive) seekPlaybackWanted = !video.paused;
         seekIntentActive = true;
         seekIntentTarget = Math.min(Math.max(Number(seconds) || 0, 0),
             Math.max(0, sourceDuration - .2));
@@ -1525,7 +1593,7 @@ This cannot be undone.`
                             video.pause();
                             currentProxy = next;
                             proxyOffset = next.start_seconds;
-                            pendingResumeSeconds = Math.min(target, sourceDuration - .2);
+                            pendingResumeSeconds = Math.min(target, Math.max(0, sourceDuration - .2));
                             playWhenProxyReady = seekPlaybackWanted;
                             startHeartbeat(path);
                             // Only this genuinely different window reattaches
@@ -1748,6 +1816,7 @@ This cannot be undone.`
         if (!window.NEOCLIP_PREVIEW && "serviceWorker" in navigator && window.isSecureContext) {
             navigator.serviceWorker.register("/sw.js").catch(() => {});
         }
+        startFileUpdates();
         await loadFiles({restoreLastSession: true});
 
         if (!currentSourcePath) {
@@ -1761,4 +1830,3 @@ This cannot be undone.`
 </script>
 </body>
 </html>
-    
