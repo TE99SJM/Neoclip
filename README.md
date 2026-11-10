@@ -29,8 +29,11 @@ NeoClip is a self-hosted video-clipping web interface built with **Python, FastA
   fallback. At most two section encodes run at once, completed sections are
   cached, and idle work stops. A first visit to an uncached section may buffer
   briefly. Chrome/Edge/Firefox retain their existing HLS playback path.
-- The current `neoclip-web` page layout, marks, skip buttons, playback-speed
-  selector and PiP controls are preserved; no separate timeline slider is added.
+- The dark editing layout follows the video with two skip rows (±10, then ±30),
+  a **Mark In / Add Clip / Mark Out** row, the clock and clip details, full-width
+  Play/Pause and Back to start buttons, Clip Queue, then Render. Playback speed,
+  PiP and timestamp options sit below the main editing flow. Both app copies
+  use the browser's timeline without a separate page slider.
 
 - At the end of a video, **Replay** returns to the original video's beginning,
   including when the current preview starts partway through the source.

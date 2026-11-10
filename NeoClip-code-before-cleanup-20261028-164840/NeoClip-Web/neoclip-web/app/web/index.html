@@ -110,31 +110,20 @@
             border-radius: 10px;
         }
 
-        .grid-5 {
+        .mark-controls {
             display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 6px;
-            margin-top: 8px;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
         }
 
-        /* Phones get the stacked playback-control layout. */
-        html.phone .player-controls {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            grid-template-areas:
-                "back-10 forward-10"
-                "back-30 forward-30"
-                "play-pause play-pause";
+        .mark-controls button {
+            min-width: 0;
+            padding-inline: 6px;
         }
-
-        html.phone .player-controls .back-10 { grid-area: back-10; }
-        html.phone .player-controls .forward-10 { grid-area: forward-10; }
-        html.phone .player-controls .back-30 { grid-area: back-30; }
-        html.phone .player-controls .forward-30 { grid-area: forward-30; }
-        html.phone .player-controls .play-pause { grid-area: play-pause; }
 
         .grid-2 {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 8px;
             margin-top: 8px;
         }
@@ -184,12 +173,6 @@
         .hidden { display: none; }
 
         @media (max-width: 520px) {
-            .grid-5 {
-                grid-template-columns: repeat(3, 1fr);
-            }
-            .player-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .player-controls .play-pause { grid-column: 1 / -1; grid-row: 3; }
-            .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             h1 { font-size: 24px; }
             video { max-height: 45svh; }
         }
@@ -226,64 +209,32 @@
         </div>
         </div>
 
-        <div class="panel">
-            <div class="grid-2 mark-controls" role="group" aria-label="Clip markers">
+        <div class="grid-2 skip-controls" role="group" aria-label="Skip playback">
+            <button type="button" onclick="skip(-10)">−10</button>
+            <button type="button" onclick="skip(10)">+10</button>
+            <button type="button" onclick="skip(-30)">−30</button>
+            <button type="button" onclick="skip(30)">+30</button>
+        </div>
+
+        <div class="panel clip-editor">
+            <div class="mark-controls" role="group" aria-label="Clip markers and add clip">
                 <button type="button" onclick="markIn()">Mark In</button>
+                <button type="button" onclick="addClip()">Add Clip</button>
                 <button type="button" onclick="markOut()">Mark Out</button>
             </div>
             <p id="sourceClock" class="status clock" aria-live="off">00:00 / 00:00</p>
-            <p id="pipelineStatus" class="status" aria-live="polite">Preparing preview</p>
-        </div>
-
-        <div class="grid-5 player-controls">
-            <button class="back-30" onclick="skip(-30)">−30</button>
-            <button class="back-10" onclick="skip(-10)">−10</button>
-            <button id="playPauseButton" class="play-pause" onclick="togglePlayback()">Play/Pause</button>
-            <button class="forward-10" onclick="skip(10)">+10</button>
-            <button class="forward-30" onclick="skip(30)">+30</button>
-        </div>
-        <button class="field" type="button" onclick="seekSource(0)">Back to start</button>
-
-        <div class="panel speed-control">
-            <label for="playbackSpeed">Playback speed</label>
-            <select id="playbackSpeed" aria-label="Playback speed">
-                <option value="1.0" selected>1.0x</option>
-                <option value="1.25">1.25x</option>
-                <option value="1.5">1.5x</option>
-                <option value="1.75">1.75x</option>
-                <option value="2.0">2.0x</option>
-                <option value="2.5">2.5x</option>
-                <option value="3.0">3.0x</option>
-                <option value="3.5">3.5x</option>
-                <option value="4.0">4.0x</option>
-                <option value="4.5">4.5x</option>
-                <option value="5.0">5.0x</option>
-            </select>
-            <p id="speedStatus" class="status" role="status" aria-live="polite"></p>
-        </div>
-
-        <button id="pipButton"
-                class="field"
-                type="button"
-                onclick="togglePictureInPicture()">
-            Picture in Picture
-        </button>
-        <p id="pipHelp" class="status">Start playback, then tap Picture in Picture. Availability depends on your browser and phone settings.</p>
-
-
-
-        <div class="panel">
             <input id="clipName"
                    class="field"
+                   aria-label="Clip name (optional)"
                    placeholder="Clip name (optional)">
-
             <p id="markStatus" class="status">
                 IN: not set<br>
                 OUT: not set
             </p>
-
-            <button class="field" onclick="addClip()">Add Clip</button>
         </div>
+
+        <button id="playPauseButton" class="field" type="button" onclick="togglePlayback()">Play/Pause</button>
+        <button class="field" type="button" onclick="seekSource(0)">Back to start</button>
 
         <div class="panel">
             <h2>Clip Queue</h2>
@@ -314,18 +265,45 @@
             <p id="renderStatus" class="status">Idle</p>
         </div>
 
-        <div class="panel">
-            <button class="field danger" onclick="deleteVideo()">Delete this video</button>
-            <p class="status">Removes the source file and its proxy from disk. You will be asked to confirm.</p>
+        <div class="panel speed-control">
+            <label for="playbackSpeed">Playback speed</label>
+            <select id="playbackSpeed" aria-label="Playback speed">
+                <option value="1.0" selected>1.0x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="1.75">1.75x</option>
+                <option value="2.0">2.0x</option>
+                <option value="2.5">2.5x</option>
+                <option value="3.0">3.0x</option>
+                <option value="3.5">3.5x</option>
+                <option value="4.0">4.0x</option>
+                <option value="4.5">4.5x</option>
+                <option value="5.0">5.0x</option>
+            </select>
+            <p id="speedStatus" class="status" role="status" aria-live="polite"></p>
         </div>
+
+        <button id="pipButton"
+                class="field"
+                type="button"
+                onclick="togglePictureInPicture()">
+            Picture in Picture
+        </button>
+        <p id="pipHelp" class="status">Start playback, then tap Picture in Picture. Availability depends on your browser and phone settings.</p>
 
         <div class="panel jump-controls">
             <label for="jumpTime">Go to time</label>
             <div class="grid-2">
-                <input id="jumpTime" placeholder="1:00:00" inputmode="decimal" aria-describedby="jumpTimeHelp">
+                <input id="jumpTime" placeholder="1:00:00" inputmode="decimal" aria-label="Jump to timestamp" aria-describedby="jumpTimeHelp">
                 <button type="button" onclick="jumpToTime()">Go to time</button>
             </div>
             <p id="jumpTimeHelp" class="status">Enter seconds, mm:ss, or hh:mm:ss.</p>
+            <p id="pipelineStatus" class="status" aria-live="polite">Preparing preview</p>
+        </div>
+
+        <div class="panel">
+            <button class="field danger" onclick="deleteVideo()">Delete this video</button>
+            <p class="status">Removes the source file and its proxy from disk. You will be asked to confirm.</p>
         </div>
     </section>
 
