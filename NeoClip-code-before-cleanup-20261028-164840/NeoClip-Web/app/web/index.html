@@ -162,7 +162,7 @@
 <body>
 <main>
     <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip Remote</h1>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.0.3</p>
+    <p class="status">GPU-first editing · Resume-aware previews · v2.0.4</p>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
@@ -292,7 +292,9 @@
     }
     function showPipeline(status) {
         document.getElementById("pipelineStatus").textContent =
-            `${status.pipeline || status.message}. Proxy starts at ${formatClock(status.start_seconds)}.` +
+            `${status.pipeline || status.message}. ` +
+            (status.delivery === "vod" ? "On-demand preview." :
+                `Proxy starts at ${formatClock(status.start_seconds)}.`) +
             (status.fallback_reason ? " GPU fallback active; details in server logs." : "");
     }
 
@@ -307,13 +309,21 @@
     // Chrome/Edge/Firefox and falls back to native playback (Safari/iOS,
     // or the original mp4 file). Resolves once the stream is ready so
     // callers can safely restore the resume position.
+    function usesNativeHls() {
+        const appleBrowser = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+            (/Safari/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|Android/.test(navigator.userAgent));
+        return !!(appleBrowser && video.canPlayType("application/vnd.apple.mpegurl"));
+    }
+
+    function proxyStatusUrl(status) {
+        return status.status_url || `/api/proxy/status?id=${status.id}`;
+    }
+
     function setVideoSrc(url) {
         destroyHls();
 
         const isHls = url.includes("/api/proxy/playlist") || url.includes(".m3u8");
-        const appleBrowser = /iPhone|iPad|iPod/.test(navigator.userAgent) ||
-            (/Safari/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|Android/.test(navigator.userAgent));
-        const preferNative = appleBrowser && video.canPlayType("application/vnd.apple.mpegurl");
+        const preferNative = usesNativeHls();
 
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(
@@ -755,7 +765,7 @@
         const ping = async () => {
             if (!currentProxy || currentSourcePath !== path) return;
             try {
-                const status = await api(`/api/proxy/status?id=${currentProxy.id}`);
+                const status = await api(proxyStatusUrl(currentProxy));
                 if (currentProxy?.id !== status.id) return;
                 currentProxy = status;
                 showPipeline(status);
@@ -967,7 +977,7 @@ This cannot be undone.`
         const selectedState = await api("/api/source", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({path: file.path, current_time: options.session?.current_time})
+            body: JSON.stringify({path: file.path, current_time: options.session?.current_time, native_vod: usesNativeHls()})
         });
 
         applyEditorSession(
@@ -1022,7 +1032,7 @@ This cannot be undone.`
         ) {
             try {
                 const status = await api(
-                    `/api/proxy/status?id=${currentProxy.id}`
+                    proxyStatusUrl(currentProxy)
                 );
                 if (watchToken !== proxyWatchToken) return;
                 currentProxy = status;
@@ -1310,7 +1320,7 @@ This cannot be undone.`
         try {
             currentProxy = await api("/api/proxy/start", {
                 method: "POST", headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({path: activeFile.path, current_time: target})
+                body: JSON.stringify({path: activeFile.path, current_time: target, native_vod: usesNativeHls()})
             });
             proxyOffset = currentProxy.start_seconds;
             pendingResumeSeconds = Math.min(target, Math.max(0, sourceDuration - 1));

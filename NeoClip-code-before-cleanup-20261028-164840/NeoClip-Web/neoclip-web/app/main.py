@@ -17,20 +17,23 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .proxies import THREADS, ProxyManager, choose_pipeline, pipeline_args
+from .vod import VodProxyManager
 
 
 @asynccontextmanager
 async def lifespan(app):
     proxies.reaper = asyncio.create_task(proxies.reap())
+    native_proxies.reaper = asyncio.create_task(native_proxies.reap())
     yield
     await proxies.close()
+    await native_proxies.close()
     if render_task and not render_task.done():
         render_task.cancel()
         await asyncio.gather(render_task, return_exceptions=True)
 
 
 app = FastAPI(title="NeoClip Web", lifespan=lifespan)
-APP_BUILD = "2.0.3"
+APP_BUILD = "2.0.4"
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
@@ -58,6 +61,7 @@ PROXY_ROOT.mkdir(parents=True, exist_ok=True)
 
 class SourceRequest(BaseModel):
     path: str
+    native_vod: bool = False
     current_time: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
 
 
@@ -130,6 +134,8 @@ def resolve_media_path(relative_path: str) -> Path:
 
 proxies = ProxyManager(PROXY_ROOT, resolve_media_path)
 app.include_router(proxies.router())
+native_proxies = VodProxyManager(PROXY_ROOT, resolve_media_path)
+app.include_router(native_proxies.router())
 app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
 
 
@@ -656,13 +662,15 @@ async def select_source(request: SourceRequest) -> dict:
         start = 0
         session["current_time"] = 0
         save_queue()
-    proxy = await proxies.start(request.path, start)
+    manager = native_proxies if request.native_vod else proxies
+    proxy = await manager.start(request.path, start)
     return {**state_response(), "proxy": proxy}
 
 
 @app.post("/api/proxy/start")
 async def start_proxy(request: SourceRequest) -> dict:
-    return await proxies.start(request.path, request.current_time or 0)
+    manager = native_proxies if request.native_vod else proxies
+    return await manager.start(request.path, request.current_time or 0)
 
 
 @app.post("/api/media/delete")
@@ -687,6 +695,7 @@ async def delete_media(request: SourceRequest) -> dict:
 
     # Stop FFmpeg/proxy access before trying to remove the source file.
     await proxies.delete_path(relative_path)
+    await native_proxies.delete_path(relative_path)
 
     try:
         source.unlink()
@@ -855,6 +864,6 @@ async def status() -> dict:
         "proxy_directory": str(PROXY_ROOT),
         "build": APP_BUILD,
         "cpu_threads": THREADS,
-        "active_proxy_processes": len(proxies.processes),
+        "active_proxy_processes": len(proxies.processes) + len(native_proxies.processes),
         "pip_note": "Browser/OS support required; open the app directly, not in an embedded frame",
     }

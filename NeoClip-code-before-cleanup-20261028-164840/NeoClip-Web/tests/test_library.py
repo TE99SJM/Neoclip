@@ -106,3 +106,34 @@ def test_reopening_eof_bookmark_resets_time_but_preserves_edits(library, monkeyp
     # Deliberate seeks toward the end still retain the requested timestamp.
     seek = client.post('/api/proxy/start', json={'path': 'sample.mp4', 'current_time': 11.8})
     assert seek.json()['start_seconds'] == 11.8
+
+
+def test_native_source_and_seek_use_full_timeline_manager(library, monkeypatch):
+    main, media, client = library
+    (media / 'sample.mp4').write_bytes(b'video')
+    calls = []
+
+    async def probe(source):
+        return 4000, True
+
+    async def start(path, requested):
+        calls.append((path, requested))
+        return {'id': 'native', 'start_seconds': 0, 'duration': 4000,
+                'delivery': 'vod', 'status_url': '/api/vod/status?id=native'}
+
+    async def wrong_manager(*args):
+        raise AssertionError('Safari must not receive an offset EVENT proxy')
+
+    monkeypatch.setattr(main.proxies, 'probe', probe)
+    monkeypatch.setattr(main.proxies, 'start', wrong_manager)
+    monkeypatch.setattr(main.native_proxies, 'start', start)
+    client.post('/api/session', json={'path': 'sample.mp4', 'current_time': 3600})
+    result = client.post('/api/source', json={'path': 'sample.mp4', 'native_vod': True})
+    assert result.status_code == 200
+    assert result.json()['current_session']['current_time'] == 3600
+    assert result.json()['proxy']['start_seconds'] == 0
+    seek = client.post('/api/proxy/start', json={
+        'path': 'sample.mp4', 'native_vod': True, 'current_time': 0,
+    })
+    assert seek.json()['delivery'] == 'vod'
+    assert calls == [('sample.mp4', 3600), ('sample.mp4', 0)]

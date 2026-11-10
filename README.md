@@ -19,7 +19,18 @@ NeoClip is a self-hosted video-clipping web interface built with **Python, FastA
 - **Self-hosted media:** Read source files and write exports to directories on your own machine or server.
 - **FFmpeg processing:** Encoding pipeline checks for accelerated options and has a CPU fallback.
 
-## Playback and automatic file updates (v2.0.3)
+## Playback and automatic file updates (v2.0.4)
+
+- Safari/iOS receives a fixed-duration HLS VOD playlist covering the **entire
+  source**, so the browser can show its native in-video time slider. Seeking
+  requests the corresponding six-second section on demand; the server does not
+  have to convert a long recording in full before playback can begin.
+- Native previews retain the existing 360p GPU pipeline selection and CPU
+  fallback. At most two section encodes run at once, completed sections are
+  cached, and idle work stops. A first visit to an uncached section may buffer
+  briefly. Chrome/Edge/Firefox retain their existing HLS playback path.
+- The current `neoclip-web` page layout, marks, skip buttons, playback-speed
+  selector and PiP controls are preserved; no separate timeline slider is added.
 
 - At the end of a video, **Replay** returns to the original video's beginning,
   including when the current preview starts partway through the source.
@@ -36,6 +47,12 @@ NeoClip is a self-hosted video-clipping web interface built with **Python, FastA
 Both checked-in application copies include these fixes. Rebuild/restart the
 deployment using the updated application directory, then reload the web page.
 Existing media/export mounts and saved editing data do not need to change.
+
+Validation includes real FFmpeg audio/silent playback, out-of-order seeks,
+section transitions, cache reuse/restart, native-HLS routing, and the existing
+replay and directory-refresh regressions. The native slider still needs a visual
+check on iPhone Safari after installing this update; it was not device-tested
+in the development environment.
 
 ## Screenshots and demo
 

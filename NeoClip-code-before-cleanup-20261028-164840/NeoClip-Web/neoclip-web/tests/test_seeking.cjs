@@ -27,6 +27,8 @@ function setup() {
         scheduleEditorSessionSave(){calls.saves++},
         sourceTime(){return ctx.proxyOffset+ctx.video.currentTime},
         async waitForMediaProgress(){},
+        usesNativeHls: () => false,
+        proxyStatusUrl: status => status.status_url || `/api/proxy/status?id=${status.id}`,
         async api(url, options){
             calls.api.push({url,options});
             return {...ctx.currentProxy};

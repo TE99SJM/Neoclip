@@ -31,6 +31,8 @@ function setup(offset = 6) {
         optionalSessionTime:value=>value,
         sourceTime(){return ctx.proxyOffset+ctx.video.currentTime},
         async waitForMediaProgress(){},
+        usesNativeHls: () => false,
+        proxyStatusUrl: status => status.status_url || `/api/proxy/status?id=${status.id}`,
         async api(url, options){
             if (!url.includes('/start')) return {...ctx.currentProxy};
             const target=JSON.parse(options.body).current_time;
