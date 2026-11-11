@@ -8,7 +8,6 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +15,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .library import VideoLibrary
+from .library_scan import scan_directory
 from .metadata import VideoMetadata
 from .proxies import THREADS, ProxyManager, choose_pipeline, pipeline_args
 from .vod import VodProxyManager
@@ -23,11 +24,13 @@ from .vod import VodProxyManager
 
 @asynccontextmanager
 async def lifespan(app):
+    library_index.start()
     proxies.reaper = asyncio.create_task(proxies.reap())
     native_proxies.reaper = asyncio.create_task(native_proxies.reap())
     yield
     await proxies.close()
     await native_proxies.close()
+    await library_index.close()
     await video_metadata.close()
     if render_task and not render_task.done():
         render_task.cancel()
@@ -35,7 +38,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip Web", lifespan=lifespan)
-APP_BUILD = "2.0.5"
+APP_BUILD = "2.0.6"
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
@@ -293,37 +296,23 @@ def load_queue() -> None:
 load_queue()
 
 
-def list_videos() -> list[dict]:
-    """Poll the entire tree: remote SMB/NFS writes may not emit local events."""
-    results = []
-    # os.walk skips inaccessible/disappearing directories without aborting the
-    # rest of the library. Do not follow directory symlinks outside the mount.
-    for directory, folders, names in os.walk(MEDIA_ROOT):
-        folders[:] = [name for name in folders if not name.startswith(".")]
-        for name in names:
-            path = Path(directory) / name
-            if name.startswith(".") or path.suffix.lower() not in VIDEO_EXTENSIONS:
-                continue
-            try:
-                path.resolve().relative_to(MEDIA_ROOT)
-                stat = path.stat()
-                if not path.is_file() or stat.st_size < 1:
-                    continue
-            except (OSError, ValueError):
-                # A transfer/rename/delete can race with any individual stat.
-                continue
-            relative = path.relative_to(MEDIA_ROOT).as_posix()
-            results.append({
-                "name": name,
-                "path": relative,
-                "original_url": f"/api/media?path={quote(relative)}",
-                "size_bytes": stat.st_size,
-                # Keep nanoseconds exact when the browser compares snapshots.
-                "modified_ns": str(stat.st_mtime_ns),
-            })
+library_index = VideoLibrary(MEDIA_ROOT, DATA_ROOT / "video_library.json")
 
-    results.sort(key=lambda item: item["path"].lower())
-    return results
+
+def list_videos() -> list[dict]:
+    """Synchronous diagnostic helper; HTTP requests use the background index."""
+    results = []
+    folders = ["."]
+    while folders:
+        try:
+            for record in scan_directory(MEDIA_ROOT, folders.pop()):
+                if "file" in record:
+                    results.append(record["file"])
+                elif "directory" in record:
+                    folders.append(record["directory"])
+        except OSError:
+            continue
+    return sorted(results, key=lambda item: item["path"].lower())
 
 
 async def run_ffmpeg(
@@ -630,10 +619,12 @@ async def home() -> HTMLResponse:
 
 
 @app.get("/api/files")
-async def get_files() -> JSONResponse:
-    files = await asyncio.to_thread(list_videos)
+async def get_files(details: bool = False) -> JSONResponse:
+    library_index.start()
+    listing = library_index.snapshot()
+    listing["files"] = video_metadata.enrich(listing["files"], MEDIA_ROOT)
     return JSONResponse(
-        video_metadata.enrich(files, MEDIA_ROOT), headers={"Cache-Control": "no-store"}
+        listing if details else listing["files"], headers={"Cache-Control": "no-store"}
     )
 
 

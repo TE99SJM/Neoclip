@@ -144,7 +144,7 @@
 <body>
 <main>
     <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip Remote</h1>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.0.5</p>
+    <p class="status">GPU-first editing · Resume-aware previews · v2.0.6</p>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
@@ -494,20 +494,29 @@
     }
 
     async function api(url, options = {}) {
-        const response = await fetch(url, options);
-
-        if (!response.ok) {
-            let message = `Request failed: ${response.status}`;
-
-            try {
-                const data = await response.json();
-                message = data.detail || message;
-            } catch (_) {}
-
-            throw new Error(message);
+        const {timeoutMs = 0, ...fetchOptions} = options;
+        const controller = timeoutMs ? new AbortController() : null;
+        const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+        try {
+            const response = await fetch(url, controller
+                ? {...fetchOptions, signal: controller.signal} : fetchOptions);
+            if (!response.ok) {
+                let message = `Request failed: ${response.status}`;
+                try {
+                    const data = await response.json();
+                    message = data.detail || message;
+                } catch (_) {}
+                throw new Error(message);
+            }
+            return await response.json();
+        } catch (error) {
+            if (controller?.signal.aborted) {
+                throw new Error("The server took too long to respond");
+            }
+            throw error;
+        } finally {
+            if (timer !== null) clearTimeout(timer);
         }
-
-        return response.json();
     }
 
     function optionalSessionTime(value) {
@@ -624,6 +633,7 @@
     let fileLoadPromise = null;
     let fileListFingerprint = "";
     let fileRefreshTimer = null;
+    let restoreSessionPending = false;
 
     function formatFileSize(value) {
         if (value === null || value === undefined) return "Size unavailable";
@@ -658,14 +668,20 @@
 
     async function refreshFiles({restoreLastSession = false} = {}) {
         try {
-            const [files, savedState] = await Promise.all([
-                api("/api/files", {cache: "no-store"}),
-                api("/api/state", {cache: "no-store"})
+            if (restoreLastSession) restoreSessionPending = true;
+            const [listing, savedState] = await Promise.all([
+                api("/api/files?details=true", {cache: "no-store", timeoutMs: 10000}),
+                api("/api/state", {cache: "no-store", timeoutMs: 10000})
             ]);
+            const {files, scan} = listing;
+            const scanNote = scan.status === "scanning" ? "Scanning video folders…" :
+                scan.status === "ready" ? "Auto-refresh on" :
+                `Some folders could not be read — retrying${scan.unavailable.length
+                    ? ": " + scan.unavailable.slice(0, 3).map(path => path === "." ? "Video folder" : path).join(", ") : ""}`;
             const fingerprint = JSON.stringify([files, savedState.clip_counts]);
             document.getElementById("fileStatus").textContent =
                 `${files.length} video file(s) found — ` +
-                `${savedState.total_queued_clips} unsaved clip(s) queued · Auto-refresh on`;
+                `${savedState.total_queued_clips} unsaved clip(s) queued · ${scanNote}`;
 
             if (fingerprint !== fileListFingerprint) {
                 const box = document.getElementById("files");
@@ -685,7 +701,10 @@
                     button.innerHTML =
                         `<strong>${escapeHtml(file.name)}${queuedText}</strong>` +
                         `<span class="path">${escapeHtml(details)}</span>`;
-                    button.onclick = () => selectVideo(file);
+                    button.onclick = () => {
+                        restoreSessionPending = false;
+                        selectVideo(file);
+                    };
                     box.appendChild(button);
                 }
                 box.scrollTop = scrollTop;
@@ -693,14 +712,19 @@
             }
             // Background changes update only the list, never the active player,
             // marks, queue, playback position or current editing session.
-            if (restoreLastSession && savedState.source_path) {
+            if (restoreSessionPending && savedState.source_path) {
                 const previousFile = files.find(file => file.path === savedState.source_path);
                 if (previousFile) {
-                    await selectVideo(previousFile, {
+                    restoreSessionPending = false;
+                    // A slow preview must not hold the library refresh promise.
+                    void selectVideo(previousFile, {
                         session: savedState.current_session, autoplay: false, scroll: false
+                    }).catch(error => {
+                        document.getElementById("selectedFile").textContent = error.message;
                     });
                 }
             }
+            if (scan.status === "ready" || !savedState.source_path) restoreSessionPending = false;
         } catch (error) {
             // Keep the last successful listing and retry after outages.
             document.getElementById("fileStatus").textContent =

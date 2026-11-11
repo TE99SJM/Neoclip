@@ -5,6 +5,7 @@ const html=readFileSync(`${__dirname}/../app/web/index.html`,'utf8');
 const elements=new Map(), events={}, timers=new Map();
 let nextTimer=0, scans=0, rows=0, selections=0, release;
 let files=[], fail=false, held=false;
+let scan={status:'ready',unavailable:[]};
 const state={clip_counts:{},total_queued_clips:0,source_path:'',current_session:{}};
 const ctx={
     document:{visibilityState:'visible',
@@ -28,7 +29,7 @@ const ctx={
         scans++;
         if(held) await new Promise(resolve=>{release=resolve});
         if(fail) throw new Error('NAS temporarily unavailable');
-        return files;
+        return {files,scan};
     },
 };
 vm.createContext(ctx);
@@ -52,6 +53,11 @@ const tick=async()=>{for(const fn of timers.values())fn();await ctx.loadFiles()}
     files=[{...files[0],duration_seconds:5025.4,duration_pending:false}];
     await tick();
     assert.match(elements.get('files').children[0].innerHTML,/1:23:45/);
+    scan={status:'partial',unavailable:['stalled-folder']};
+    await tick();
+    assert.match(elements.get('fileStatus').textContent,/stalled-folder/);
+    assert.equal(elements.get('files').children.length,1,'unavailable folder keeps existing videos');
+    scan={status:'ready',unavailable:[]};
     const unchanged=rows;
     await tick();assert.equal(rows,unchanged,'unchanged polls preserve DOM/focus');
     files=[{...files[0],size_bytes:25}];await tick();
@@ -72,5 +78,18 @@ const tick=async()=>{for(const fn of timers.values())fn();await ctx.loadFiles()}
     events.pagehide();assert.equal(timers.size,0);
     events.pageshow({persisted:true});await ctx.loadFiles();assert.equal(timers.size,1);
     events.pagehide();
+    state.source_path='later.mp4';
+    scan={status:'scanning',unavailable:[]};files=[];
+    await ctx.loadFiles({restoreLastSession:true});
+    assert.equal(selections,0);
+    files=[{name:'later.mp4',path:'later.mp4',size_bytes:2}];
+    let finishSelection;
+    ctx.selectVideo=()=>{selections++;return new Promise(resolve=>{finishSelection=resolve})};
+    await ctx.loadFiles();
+    assert.equal(selections,1,'resume follows a video discovered on a later scan');
+    files=[...files,{name:'other.mp4',path:'other.mp4',size_bytes:3}];
+    await ctx.loadFiles();
+    assert.equal(elements.get('files').children.length,2,'slow preview cannot block file-list updates');
+    finishSelection();
     console.log('Automatic transfer/rename/change/delete refresh, retry, dedup and page-return checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1});

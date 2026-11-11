@@ -19,8 +19,20 @@ NeoClip is a self-hosted video-clipping web interface built with **Python, FastA
 - **Self-hosted media:** Read source files and write exports to directories on your own machine or server.
 - **FFmpeg processing:** Encoding pipeline checks for accelerated options and has a CPU fallback.
 
-## Playback and automatic file updates (v2.0.5)
+## Playback and automatic file updates (v2.0.6)
 
+- File-list requests return immediately from a shared background index. Videos
+  appear as they are discovered, without waiting for the entire NAS tree.
+  `/data/video_library.json` preserves the last listing across restarts.
+  Each directory scan runs in an isolated process with a five-second inactivity
+  timeout and a 30-second total budget; slow/unavailable folders are reported
+  and retried while other discovered folders continue. Cached entries are
+  retained for unreadable portions of the tree. Only one scanner runs at once,
+  even if a kernel-blocked NAS operation cannot immediately be terminated.
+- The phone shows scanning/unavailable-folder status instead of waiting on an
+  unbounded request. File/state requests time out after ten seconds and retry;
+  restoring a slow preview no longer blocks list refreshes. This does not repair
+  a disconnected NAS mount or make inaccessible media playable.
 - Each video shows its **name once**, followed by **file size and duration**.
   Videos in subfolders also show the containing folder without repeating the
   filename. Existing queued-clip counts remain visible.
@@ -50,8 +62,9 @@ NeoClip is a self-hosted video-clipping web interface built with **Python, FastA
 - **Back to start** and **Go to time → 00:01** can reach the first frame and first
   second. Playback recovery treats zero as a valid timestamp.
 - Finished videos reopen at the beginning; clip queues and marks are preserved.
-- While the page is visible, the file list rescans the configured `MEDIA_ROOT`
-  and its subfolders every five seconds. New transfers, renames, modifications,
+- A shared background scan checks the configured `MEDIA_ROOT` and its
+  subfolders, waiting five seconds between passes. Visible pages refresh every
+  five seconds. New transfers, renames, modifications,
   and deletions appear automatically, subject to scan time and NAS caching.
   Polling also works with SMB/NFS mounts that do not deliver local file events.
 - Returning to the tab refreshes the list immediately. Refreshes do not reload
