@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import time
+from contextlib import asynccontextmanager
 
 from .proxies import capture
 
@@ -17,6 +18,8 @@ class VideoMetadata:
         self.pending = set()
         self.queue = asyncio.Queue()
         self.workers = set()
+        self.active = {}
+        self.held = set()
         self.dirty = False
         self.save_lock = asyncio.Lock()
         try:
@@ -52,7 +55,7 @@ class VideoMetadata:
             retry_after = cached.get("retry_after", 0) if matches else 0
             if not isinstance(retry_after, (int, float)):
                 retry_after = 0
-            if duration is None and time.time() >= retry_after:
+            if key not in self.held and duration is None and time.time() >= retry_after:
                 self.requested[key] = dict(item)
                 if key not in self.pending:
                     self.pending.add(key)
@@ -110,21 +113,56 @@ class VideoMetadata:
                 return duration
         return None
 
+    @asynccontextmanager
+    async def pause(self, source):
+        """Stop this file's probe and prevent polling from reopening it."""
+        key = str(source)
+        self.held.add(key)
+        self.requested.pop(key, None)
+        try:
+            task = self.active.get(key)
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            yield
+        finally:
+            self.held.discard(key)
+
+    async def forget(self, source):
+        self.cache.pop(str(source), None)
+        self.dirty = True
+        await self.save()
+
+    async def _read(self, item):
+        source = await asyncio.to_thread(self._source, item)
+        duration = await self.probe(source)
+        await asyncio.to_thread(self._source, item)
+        return duration
+
     async def _worker(self):
         completed = 0
         while not self.queue.empty():
             key = self.queue.get_nowait()
-            item = self.requested[key]
+            item = self.requested.get(key)
             try:
+                if item is None or key in self.held:
+                    continue
                 duration = None
+                task = asyncio.create_task(self._read(item))
+                self.active[key] = task
                 try:
-                    source = await asyncio.to_thread(self._source, item)
-                    duration = await self.probe(source)
-                    await asyncio.to_thread(self._source, item)
+                    duration = await task
+                except asyncio.CancelledError:
+                    if asyncio.current_task().cancelling():
+                        raise
+                    # A delete cancelled only this file's probe. Keep the
+                    # worker available for other videos in the library.
+                    continue
                 except Exception:  # noqa: BLE001 -- unreadable/partial videos must not break the list
                     duration = None
                 # A newer scan may have observed an ongoing transfer meanwhile.
-                if self.fingerprint(self.requested[key]) == self.fingerprint(item):
+                latest = self.requested.get(key)
+                if latest is not None and self.fingerprint(latest) == self.fingerprint(item):
                     self.cache[key] = {
                         "size_bytes": item["size_bytes"],
                         "modified_ns": item["modified_ns"],
@@ -134,10 +172,11 @@ class VideoMetadata:
                     self.dirty = True
                     self.requested.pop(key, None)
             finally:
+                self.active.pop(key, None)
                 self.pending.discard(key)
                 self.queue.task_done()
             # Coalesce transfer updates into one follow-up probe per path.
-            if key in self.requested:
+            if key in self.requested and key not in self.held:
                 self.pending.add(key)
                 self.queue.put_nowait(key)
             completed += 1

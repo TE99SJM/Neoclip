@@ -18,6 +18,8 @@ class VideoLibrary:
         self.interval = interval
         self.timeout = timeout
         self.files = {}
+        self.removed = set()
+        self.save_lock = asyncio.Lock()
         self.task = None
         self.process = None
         self.status = "scanning"
@@ -91,8 +93,9 @@ class VideoLibrary:
                 record = json.loads(line)
                 if "file" in record:
                     item = record["file"]
-                    self.files[item["path"]] = item
-                    seen.add(item["path"])
+                    if item["path"] not in self.removed:
+                        self.files[item["path"]] = item
+                        seen.add(item["path"])
                 elif "directory" in record:
                     folders.append(record["directory"])
                 elif "unavailable" in record:
@@ -118,6 +121,7 @@ class VideoLibrary:
                 self.status = "unavailable" if not self.files else "partial"
                 return
             self.process = None
+        self.removed.clear()
         self.status = "scanning"
         self.unavailable = []
         seen = set()
@@ -139,15 +143,26 @@ class VideoLibrary:
         self.unavailable = list(dict.fromkeys(self.unavailable))
         self.status = ("partial" if self.files else "unavailable") if self.unavailable else "ready"
         self.location = ""
-        content = json.dumps({"root": str(self.root), "files": list(self.files.values())})
-        # The cache is local /data, never the NAS. A failed cache write must not
-        # discard a usable listing. Finish the atomic write before cancellation.
-        writing = asyncio.create_task(asyncio.to_thread(self._write, content))
-        try:
-            await asyncio.shield(writing)
-        except asyncio.CancelledError:
-            await writing
-            raise
+        await self.save()
+
+    async def forget(self, path):
+        # Ignore old records already buffered by the current scanner. The next
+        # fresh pass can discover a newly transferred file with the same name.
+        self.removed.add(path)
+        self.files.pop(path, None)
+        await self.save()
+
+    async def save(self):
+        async with self.save_lock:
+            content = json.dumps({"root": str(self.root), "files": list(self.files.values())})
+            # Local cache only. Complete an in-flight atomic write before
+            # allowing deletion or shutdown to write a newer snapshot.
+            writing = asyncio.create_task(asyncio.to_thread(self._write, content))
+            try:
+                await asyncio.shield(writing)
+            except asyncio.CancelledError:
+                await writing
+                raise
 
     def _write(self, content):
         try:

@@ -149,3 +149,39 @@ def test_kernel_blocked_reader_does_not_spawn_replacements(tmp_path):
             await index.scan_once()
         assert index.status == 'unavailable'
     asyncio.run(exercise())
+
+
+def test_delete_discards_buffered_scan_record_and_allows_later_transfer(tmp_path):
+    async def run():
+        from collections import deque
+        source = tmp_path / "selected.mp4"
+        source.write_bytes(b"original")
+        index = VideoLibrary(tmp_path, tmp_path / "index.json")
+        await index.scan_once()
+        stale = index.files[source.name]
+        original_spawn = index._spawn
+        ready = asyncio.Event()
+        class Process:
+            returncode = 0
+            stdout = asyncio.StreamReader()
+            async def wait(self):
+                return 0
+        process = Process()
+        async def spawn(directory):
+            ready.set()
+            return process
+        index._spawn = spawn
+        scanning = asyncio.create_task(index._directory(".", set(), deque()))
+        await ready.wait()
+        source.unlink()
+        await index.forget(source.name)
+        process.stdout.feed_data((json.dumps({"file": stale}) + "\n" + json.dumps({"complete": True}) + "\n").encode())
+        process.stdout.feed_eof()
+        await scanning
+        assert index.files == {}
+        assert json.loads(index.cache_path.read_text())["files"] == []
+        index._spawn = original_spawn
+        source.write_bytes(b"new transfer")
+        await index.scan_once()
+        assert index.files[source.name]["size_bytes"] == len(b"new transfer")
+    asyncio.run(run())

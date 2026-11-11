@@ -19,8 +19,14 @@ NeoClip is a self-hosted video-clipping web interface built with **Python, FastA
 - **Self-hosted media:** Read source files and write exports to directories on your own machine or server.
 - **FFmpeg processing:** Encoding pipeline checks for accelerated options and has a CPU fallback.
 
-## Playback and automatic file updates (v2.0.6)
+## Playback and automatic file updates (v2.0.7)
 
+- Deletion releases the browser player, stops the selected video's metadata
+  probe and preview/render jobs, and retries temporary NAS busy errors briefly.
+  Preview startup cannot race deletion. Changed/replaced files are not retried
+  blindly, and clips/marks are retained on failure. Successful deletion removes
+  the cached library row immediately. An external NAS lock or outage may still
+  require stopping another player/transfer and trying again.
 - File-list requests return immediately from a shared background index. Videos
   appear as they are discovered, without waiting for the entire NAS tree.
   `/data/video_library.json` preserves the last listing across restarts.

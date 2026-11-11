@@ -221,3 +221,46 @@ def test_cache_write_failure_does_not_hide_duration(tmp_path):
         await metadata.close()
 
     asyncio.run(run())
+
+
+def test_delete_pauses_active_and_queued_probes_and_failure_can_resume(tmp_path):
+    async def run():
+        paths = [tmp_path / f"{n}.mp4" for n in range(4)]
+        for path in paths:
+            path.write_bytes(b"video")
+        metadata = VideoMetadata(tmp_path / "cache.json", lambda p: tmp_path / p)
+        files = [entry(path) for path in paths]
+        started, released, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        calls = []
+        async def probe(path):
+            calls.append(path)
+            if path == paths[0] and not closed.is_set():
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    closed.set()
+            elif path == paths[1]:
+                await released.wait()
+            return 20
+        metadata.probe = probe
+        metadata.enrich(files, tmp_path)
+        await started.wait()
+        async with metadata.pause(paths[2]):
+            async with metadata.pause(paths[0]):
+                assert closed.is_set(), "active probe has closed before deletion"
+                for _ in range(3):
+                    metadata.enrich(files, tmp_path)
+                released.set()
+                await finish(metadata)
+                assert calls.count(paths[0]) == 1
+                assert paths[2] not in calls
+                assert paths[3] in calls, "other videos continue probing"
+                await metadata.forget(paths[0])
+        # Failed deletion releases the hold, so subsequent polling can retry.
+        metadata.enrich(files, tmp_path)
+        await finish(metadata)
+        assert calls.count(paths[0]) == 2 and calls.count(paths[2]) == 1
+        assert all(item["duration_seconds"] == 20 for item in metadata.enrich(files, tmp_path))
+        await metadata.close()
+    asyncio.run(run())

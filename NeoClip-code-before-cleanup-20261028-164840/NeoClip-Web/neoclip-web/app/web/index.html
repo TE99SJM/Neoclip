@@ -191,7 +191,7 @@
 <body>
 <main>
     <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip Remote</h1>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.0.6</p>
+    <p class="status">GPU-first editing · Resume-aware previews · v2.0.7</p>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
@@ -420,6 +420,7 @@
     let activeFile = null;
     let proxyOffset = 0;
     let selectionBusy = false;
+    let deletionBusy = false;
     let pendingSelection = null;
     let queuedSeek = null;
     let seekWorkerActive = false;
@@ -1095,30 +1096,32 @@
     });
 
     async function deleteVideo() {
-        if (!currentSourcePath) {
-            return;
-        }
-
-        const name = currentSourcePath.split("/").pop();
-        const confirmed = window.confirm(
-            `Delete "${name}"?
-
-This permanently removes the source file and its 360p proxy.
-This cannot be undone.`
-        );
-        if (!confirmed) {
-            return;
-        }
-
+        if (!currentSourcePath || deletionBusy || selectionBusy) return;
         const pathToDelete = currentSourcePath;
+        const name = pathToDelete.split("/").pop();
+        if (!window.confirm(`Delete "${name}"?\n\nThis permanently removes the source file and its 360p proxy.\nThis cannot be undone.`)) return;
+
+        deletionBusy = true;
+        const savedSession = editorSessionPayload();
+        pendingResumeSeconds = savedSession.current_time;
         cancelPendingSeeks();
         resetPlayerLoading();
 
-        // Stop watching/heartbeating the current source.
         proxyWatchToken += 1;
         stopHeartbeat();
-        currentlyUsingProxy = false;
         currentSourcePath = null;
+        currentlyUsingProxy = false;
+        currentProxy = null;
+        if (sessionSaveTimer) {
+            clearTimeout(sessionSaveTimer);
+            sessionSaveTimer = null;
+        }
+        // Release Safari/native HLS and hls.js BEFORE the server removes the
+        // source. Pause/load events must not save a new zero-time session.
+        destroyHls();
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
 
         try {
             const result = await api("/api/media/delete", {
@@ -1126,40 +1129,37 @@ This cannot be undone.`
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({path: pathToDelete})
             });
-
             if (!result.ok || result.exists !== false) {
                 throw new Error("The server did not confirm that the file was removed.");
             }
         } catch (error) {
+            currentSourcePath = pathToDelete;
+            applyEditorSession(savedSession);
+            lastSavedSessionJson = "";
+            deletionBusy = false;
+            // Keep edits and selection available for a retry. Reopen only on
+            // user selection, so a failed delete does not immediately relock it.
+            document.getElementById("pipelineStatus").textContent =
+                "Deletion failed. Retry Delete, or select the video again to resume playback.";
             alert("Delete failed: " + error.message);
-            // Restore the selection and heartbeat so the user can retry.
-            startHeartbeat(pathToDelete);
             return;
         }
-
-        // Clear the player.
-        destroyHls();
-        video.pause();
-        video.removeAttribute("src");
-        video.load();
 
         markInSeconds = null;
         markOutSeconds = null;
         pendingResumeSeconds = 0;
+        activeFile = null;
         lastSavedSessionJson = "";
-        if (sessionSaveTimer) {
-            clearTimeout(sessionSaveTimer);
-            sessionSaveTimer = null;
-        }
         updateMarkStatus();
         document.getElementById("selectedFile").textContent = "";
         document.getElementById("playerSection").classList.add("hidden");
-
+        deletionBusy = false;
         await loadState();
         await loadFiles();
     }
 
     async function selectVideo(file, options = {}) {
+        if (deletionBusy) return;
         if (selectionBusy) {
             pendingSelection = {file, options};
             return;

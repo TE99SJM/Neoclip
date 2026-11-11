@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import math
 import os
@@ -15,6 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .deletion import VideoChangedError, fingerprint, remove_video
 from .library import VideoLibrary
 from .library_scan import scan_directory
 from .metadata import VideoMetadata
@@ -38,7 +40,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip Web", lifespan=lifespan)
-APP_BUILD = "2.0.6"
+APP_BUILD = "2.0.7"
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
@@ -105,6 +107,8 @@ render_state = {
     "error": "",
 }
 
+media_change_lock = asyncio.Lock()
+deleting_paths = set()
 render_task: Optional[asyncio.Task] = None
 render_process: Optional[asyncio.subprocess.Process] = None
 
@@ -630,6 +634,8 @@ async def get_files(details: bool = False) -> JSONResponse:
 
 @app.get("/api/media")
 async def get_media(path: str) -> FileResponse:
+    if path in deleting_paths:
+        raise HTTPException(409, "This video is being deleted")
     media_path = resolve_media_path(path)
 
     return FileResponse(
@@ -641,89 +647,83 @@ async def get_media(path: str) -> FileResponse:
 
 @app.post("/api/source")
 async def select_source(request: SourceRequest) -> dict:
-    resolve_media_path(request.path)
+    if request.path in deleting_paths:
+        raise HTTPException(409, "This video is being deleted")
+    async with media_change_lock:
+        resolve_media_path(request.path)
 
-    state["source_path"] = request.path
-    state["queues"].setdefault(request.path, [])
-    session = editor_session_for(request.path)
-    save_queue()
-    start = (
-        request.current_time
-        if request.current_time is not None
-        else session["current_time"]
-    )
-    duration, _ = await proxies.probe(resolve_media_path(request.path))
-    if start >= duration - 0.25:
-        start = 0
-        session["current_time"] = 0
+        state["source_path"] = request.path
+        state["queues"].setdefault(request.path, [])
+        session = editor_session_for(request.path)
         save_queue()
-    manager = native_proxies if request.native_vod else proxies
-    proxy = await manager.start(request.path, start)
-    return {**state_response(), "proxy": proxy}
+        start = (
+            request.current_time
+            if request.current_time is not None
+            else session["current_time"]
+        )
+        duration, _ = await proxies.probe(resolve_media_path(request.path))
+        if start >= duration - 0.25:
+            start = 0
+            session["current_time"] = 0
+            save_queue()
+        manager = native_proxies if request.native_vod else proxies
+        proxy = await manager.start(request.path, start)
+        return {**state_response(), "proxy": proxy}
 
 
 @app.post("/api/proxy/start")
 async def start_proxy(request: SourceRequest) -> dict:
-    manager = native_proxies if request.native_vod else proxies
-    return await manager.start(request.path, request.current_time or 0)
+    if request.path in deleting_paths:
+        raise HTTPException(409, "This video is being deleted")
+    async with media_change_lock:
+        manager = native_proxies if request.native_vod else proxies
+        return await manager.start(request.path, request.current_time or 0)
 
 
 @app.post("/api/media/delete")
 async def delete_media(request: SourceRequest) -> dict:
-    global render_task, render_process
+    global render_task
 
     relative_path = request.path
-    # Validates that the path is inside MEDIA_ROOT and still exists.
-    source = resolve_media_path(relative_path)
-
-    # If a render is running against this source, cancel it before deleting.
-    if (
-        render_state.get("source_path") == relative_path
-        and render_task is not None
-        and not render_task.done()
-    ):
-        if render_process is not None and render_process.returncode is None:
-            render_process.kill()
-        render_task.cancel()
-        render_task = None
-        render_process = None
-
-    # Stop FFmpeg/proxy access before trying to remove the source file.
-    await proxies.delete_path(relative_path)
-    await native_proxies.delete_path(relative_path)
-
+    if relative_path in deleting_paths:
+        raise HTTPException(409, "This video is already being deleted")
+    deleting_paths.add(relative_path)
     try:
-        source.unlink()
+        async with media_change_lock:
+            source = await asyncio.to_thread(resolve_media_path, relative_path)
+            expected = await asyncio.to_thread(fingerprint, source)
+            async with video_metadata.pause(MEDIA_ROOT / relative_path):
+                if (render_state.get("source_path") == relative_path
+                        and render_task is not None and not render_task.done()):
+                    task = render_task
+                    task.cancel()
+                    # FFmpeg's finally block closes the source before unlink.
+                    await asyncio.gather(task, return_exceptions=True)
+                    render_task = None
+
+                await proxies.delete_path(relative_path)
+                await native_proxies.delete_path(relative_path)
+                await remove_video(source, expected)
+
+                # Only discard edits and cached rows after physical deletion.
+                state["queues"].pop(relative_path, None)
+                state["editor_sessions"].pop(relative_path, None)
+                if state.get("source_path") == relative_path:
+                    state["source_path"] = ""
+                save_queue()
+                await library_index.forget(relative_path)
+                await video_metadata.forget(MEDIA_ROOT / relative_path)
+                return {"ok": True, "deleted": relative_path, "exists": False}
+    except VideoChangedError as exc:
+        raise HTTPException(409, "The video changed during deletion. Review it before trying again.") from exc
     except PermissionError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "The video could not be deleted because /media is read-only or "
-                "the file is locked. In compose.yaml, mount the media folder as "
-                "'/media' or ':rw', not ':ro', then restart the container."
-            ),
-        ) from exc
+        raise HTTPException(409, "The NAS denied deletion. Check the share's delete permission and that /media is writable.") from exc
     except OSError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"The video could not be deleted from disk: {exc}",
-        ) from exc
-
-    # Never report success unless the file is actually gone.
-    if source.exists():
-        raise HTTPException(
-            status_code=500,
-            detail="Delete was attempted, but the video still exists on disk.",
-        )
-
-    # Only clear queue/state after physical deletion succeeds.
-    state["queues"].pop(relative_path, None)
-    state["editor_sessions"].pop(relative_path, None)
-    if state.get("source_path") == relative_path:
-        state["source_path"] = ""
-    save_queue()
-
-    return {"ok": True, "deleted": relative_path, "exists": False}
+        if exc.errno in {errno.EAGAIN, errno.EBUSY}:
+            raise HTTPException(409, "The NAS is still busy or the video is in use. Stop other playback or transfers, wait a moment, then try Delete again. Your clips and marks have been kept.") from exc
+        raise HTTPException(500, f"The video could not be deleted from disk: {exc}") from exc
+    finally:
+        deleting_paths.discard(relative_path)
 
 
 @app.get("/api/state")
@@ -804,6 +804,9 @@ async def clear_clips() -> dict:
 @app.post("/api/render")
 async def start_render(request: RenderRequest) -> dict:
     global render_task
+
+    if state["source_path"] in deleting_paths:
+        raise HTTPException(409, "This video is being deleted")
 
     if render_task and not render_task.done():
         raise HTTPException(status_code=409, detail="A render is already running")
