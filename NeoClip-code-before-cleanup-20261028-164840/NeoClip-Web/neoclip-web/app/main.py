@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .metadata import VideoMetadata
 from .proxies import THREADS, ProxyManager, choose_pipeline, pipeline_args
 from .vod import VodProxyManager
 
@@ -27,13 +28,14 @@ async def lifespan(app):
     yield
     await proxies.close()
     await native_proxies.close()
+    await video_metadata.close()
     if render_task and not render_task.done():
         render_task.cancel()
         await asyncio.gather(render_task, return_exceptions=True)
 
 
 app = FastAPI(title="NeoClip Web", lifespan=lifespan)
-APP_BUILD = "2.0.4"
+APP_BUILD = "2.0.5"
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
@@ -132,6 +134,7 @@ def resolve_media_path(relative_path: str) -> Path:
     return candidate
 
 
+video_metadata = VideoMetadata(DATA_ROOT / "video_metadata.json", resolve_media_path)
 proxies = ProxyManager(PROXY_ROOT, resolve_media_path)
 app.include_router(proxies.router())
 native_proxies = VodProxyManager(PROXY_ROOT, resolve_media_path)
@@ -628,8 +631,9 @@ async def home() -> HTMLResponse:
 
 @app.get("/api/files")
 async def get_files() -> JSONResponse:
+    files = await asyncio.to_thread(list_videos)
     return JSONResponse(
-        await asyncio.to_thread(list_videos), headers={"Cache-Control": "no-store"}
+        video_metadata.enrich(files, MEDIA_ROOT), headers={"Cache-Control": "no-store"}
     )
 
 

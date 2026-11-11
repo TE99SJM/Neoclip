@@ -144,7 +144,7 @@
 <body>
 <main>
     <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip Remote</h1>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.0.4</p>
+    <p class="status">GPU-first editing · Resume-aware previews · v2.0.5</p>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
@@ -625,6 +625,27 @@
     let fileListFingerprint = "";
     let fileRefreshTimer = null;
 
+    function formatFileSize(value) {
+        if (value === null || value === undefined) return "Size unavailable";
+        const bytes = Number(value);
+        if (!Number.isFinite(bytes) || bytes < 0) return "Size unavailable";
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        const unit = bytes > 0 ? Math.min(4, Math.floor(Math.log(bytes) / Math.log(1000))) : 0;
+        return `${(bytes / 1000 ** unit).toFixed(unit ? 1 : 0)} ${units[unit]}`;
+    }
+
+    function formatFileDuration(file) {
+        const duration = Number(file.duration_seconds);
+        if (!Number.isFinite(duration) || duration <= 0) {
+            return file.duration_pending ? "Length: reading…" : "Length unavailable";
+        }
+        const total = Math.round(duration);
+        const hours = Math.floor(total / 3600);
+        const minutes = String(Math.floor(total / 60) % 60).padStart(2, "0");
+        const seconds = String(total % 60).padStart(2, "0");
+        return hours ? `${hours}:${minutes}:${seconds}` : `${minutes}:${seconds}`;
+    }
+
     function loadFiles(options = {}) {
         // Slow NAS scans and foreground/manual refreshes share one request.
         if (!fileLoadPromise) {
@@ -656,9 +677,14 @@
                     const queuedCount = savedState.clip_counts[file.path] || 0;
                     const queuedText = queuedCount
                         ? ` — ${queuedCount} queued clip${queuedCount === 1 ? "" : "s"}` : "";
+                    const folder = file.path.includes("/")
+                        ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
+                    const details = `${formatFileSize(file.size_bytes)} · ${formatFileDuration(file)}` +
+                        (folder ? ` · Folder: ${folder}` : "");
+                    button.title = file.path;
                     button.innerHTML =
                         `<strong>${escapeHtml(file.name)}${queuedText}</strong>` +
-                        `<span class="path">${escapeHtml(file.path)}</span>`;
+                        `<span class="path">${escapeHtml(details)}</span>`;
                     button.onclick = () => selectVideo(file);
                     box.appendChild(button);
                 }

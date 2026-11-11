@@ -19,7 +19,17 @@ NeoClip is a self-hosted video-clipping web interface built with **Python, FastA
 - **Self-hosted media:** Read source files and write exports to directories on your own machine or server.
 - **FFmpeg processing:** Encoding pipeline checks for accelerated options and has a CPU fallback.
 
-## Playback and automatic file updates (v2.0.4)
+## Playback and automatic file updates (v2.0.5)
+
+- Each video shows its **name once**, followed by **file size and duration**.
+  Videos in subfolders also show the containing folder without repeating the
+  filename. Existing queued-clip counts remain visible.
+- Durations fill in during the initial background scan and are cached in
+  `/data/video_metadata.json`, including across restarts. At most two FFprobe
+  lookups run at once; directory listings do not wait for these lookups. A size
+  or modification-time change refreshes that video's duration. Incomplete or
+  unreadable videos show an unavailable length and retry after a minute (or
+  immediately when the file changes).
 
 - Safari/iOS receives a fixed-duration HLS VOD playlist covering the **entire
   source**, so the browser can show its native in-video time slider. Seeking

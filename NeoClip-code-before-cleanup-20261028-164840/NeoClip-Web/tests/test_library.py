@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,11 @@ def library(tmp_path, monkeypatch):
     monkeypatch.setattr(main, 'MEDIA_ROOT', media)
     monkeypatch.setattr(main, 'QUEUE_FILE', tmp_path / 'queue.json')
     monkeypatch.setattr(main, 'state', {'source_path': '', 'queues': {}, 'editor_sessions': {}})
-    return main, media, TestClient(main.app)
+    monkeypatch.setattr(main, 'video_metadata', main.VideoMetadata(
+        tmp_path / 'metadata.json', main.resolve_media_path,
+    ))
+    with TestClient(main.app) as client:
+        yield main, media, client
 
 
 def test_recursive_transfer_change_rename_delete_and_cache_headers(library):
@@ -75,6 +80,29 @@ def test_empty_mount_can_appear_later(library, monkeypatch):
     mount.mkdir()
     (mount / 'arrived.mov').write_bytes(b'video')
     assert client.get('/api/files').json()[0]['name'] == 'arrived.mov'
+
+
+def test_duration_metadata_fills_in_on_existing_files_endpoint(library, monkeypatch):
+    main, media, client = library
+    (media / 'sample.mp4').write_bytes(b'video')
+    calls = []
+
+    async def probe(source):
+        calls.append(source.name)
+        return 90.5
+
+    monkeypatch.setattr(main.video_metadata, 'probe', probe)
+    first = client.get('/api/files').json()[0]
+    assert first['size_bytes'] == 5
+    assert first['duration_seconds'] is None and first['duration_pending']
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        updated = client.get('/api/files').json()[0]
+        if not updated['duration_pending']:
+            break
+        time.sleep(.01)
+    assert updated['duration_seconds'] == 90.5
+    assert calls == ['sample.mp4']
 
 
 def test_reopening_eof_bookmark_resets_time_but_preserves_edits(library, monkeypatch):
