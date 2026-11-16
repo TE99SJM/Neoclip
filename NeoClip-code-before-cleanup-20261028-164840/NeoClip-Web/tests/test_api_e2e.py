@@ -59,43 +59,45 @@ def test_real_ffmpeg_resume_and_exports(tmp_path, monkeypatch):
             client.post("/api/source", json={"path": "../etc/passwd"}).status_code
             == 400
         )
-        assert client.get("/api/proxy/status?id=invalid").status_code == 404
+        assert client.get("/api/vod/status?id=invalid").status_code == 404
         client.post("/api/session", json={"path": "sample.mp4", "current_time": 6})
         source = client.post("/api/source", json={"path": "sample.mp4"}).json()
         job = source["proxy"]
-        assert job["start_seconds"] == 6
+        assert job["start_seconds"] == 0
+        assert job["resume_seconds"] == 6
         assert source["current_session"]["current_time"] == 6
         deadline = time.time() + 25
         while time.time() < deadline:
-            job = client.get("/api/proxy/status", params={"id": job["id"]}).json()
+            job = client.get("/api/vod/status", params={"id": job["id"]}).json()
             if job["status"] == "error":
                 raise AssertionError(job["error"])
-            if job["status"] == "ready":
+            if job["build_status"] == "complete":
                 break
             time.sleep(0.1)
         assert job["status"] == "ready"
-        assert job["playable"] and 5.8 < job["available_seconds"] < 6.2
+        assert job["playable"] and 11.8 < job["available_seconds"] < 12.2
+        assert job["build_status"] == "complete" and job["height"] == 240
         text = client.get(job["url"]).text
         assert f"id={job['id']}" in text
-        assert "TIME-OFFSET=0" in text
-        segment = client.get(f"/api/proxy/segment/segment_00000.ts?id={job['id']}")
+        assert "TIME-OFFSET=6" in text
+        segment = client.get(f"/api/vod/segment/segment_00000.ts?id={job['id']}")
         assert segment.status_code == 200 and len(segment.content) > 1000
         assert (
-            client.get(f"/api/proxy/segment/job.json?id={job['id']}").status_code == 400
+            client.get(f"/api/vod/segment/job.json?id={job['id']}").status_code == 400
         )
         same = client.post(
             "/api/proxy/start", json={"path": "sample.mp4", "current_time": 8}
         ).json()
         assert same["id"] == job["id"]
-        # Going earlier starts an independent offset window.
+        # Going earlier reuses the same full-duration proxy.
         earlier = client.post(
             "/api/proxy/start", json={"path": "sample.mp4", "current_time": 0}
         ).json()
         assert earlier["start_seconds"] == 0
-        assert earlier["id"] != job["id"]
+        assert earlier["id"] == job["id"]
         deadline = time.time() + 25
         while time.time() < deadline:
-            earlier = client.get("/api/proxy/status", params={"id": earlier["id"]}).json()
+            earlier = client.get("/api/vod/status", params={"id": earlier["id"]}).json()
             if earlier["status"] == "ready":
                 break
             assert earlier["status"] != "error", earlier.get("error")

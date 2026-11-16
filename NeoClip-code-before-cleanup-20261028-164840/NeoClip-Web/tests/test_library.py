@@ -21,6 +21,9 @@ def library(tmp_path, monkeypatch):
     main = importlib.import_module('app.main')
     monkeypatch.setattr(main, 'MEDIA_ROOT', media)
     monkeypatch.setattr(main, 'QUEUE_FILE', tmp_path / 'queue.json')
+    manager = main.PersistentProxyManager(tmp_path / 'proxies', main.resolve_media_path)
+    monkeypatch.setattr(main, 'proxies', manager)
+    monkeypatch.setattr(main, 'native_proxies', manager)
     monkeypatch.setattr(main, 'state', {'source_path': '', 'queues': {}, 'editor_sessions': {}})
     monkeypatch.setattr(main, 'video_metadata', main.VideoMetadata(
         tmp_path / 'metadata.json', main.resolve_media_path,
@@ -129,7 +132,7 @@ def test_reopening_eof_bookmark_resets_time_but_preserves_edits(library, monkeyp
         return 12, True
 
     async def start(path, requested):
-        return {'id': 'test', 'start_seconds': requested, 'duration': 12}
+        return {'id': 'test', 'start_seconds': 0, 'duration': 12, 'requested': requested}
 
     monkeypatch.setattr(main.proxies, 'probe', probe)
     monkeypatch.setattr(main.proxies, 'start', start)
@@ -149,7 +152,8 @@ def test_reopening_eof_bookmark_resets_time_but_preserves_edits(library, monkeyp
     assert stored['editor_sessions']['sample.mp4']['current_time'] == 0
     # Deliberate seeks toward the end still retain the requested timestamp.
     seek = client.post('/api/proxy/start', json={'path': 'sample.mp4', 'current_time': 11.8})
-    assert seek.json()['start_seconds'] == 11.8
+    assert seek.json()['start_seconds'] == 0
+    assert seek.json()['requested'] == 11.8
 
 
 def test_native_source_and_seek_use_full_timeline_manager(library, monkeypatch):
@@ -165,11 +169,7 @@ def test_native_source_and_seek_use_full_timeline_manager(library, monkeypatch):
         return {'id': 'native', 'start_seconds': 0, 'duration': 4000,
                 'delivery': 'vod', 'status_url': '/api/vod/status?id=native'}
 
-    async def wrong_manager(*args):
-        raise AssertionError('Safari must not receive an offset EVENT proxy')
-
     monkeypatch.setattr(main.proxies, 'probe', probe)
-    monkeypatch.setattr(main.proxies, 'start', wrong_manager)
     monkeypatch.setattr(main.native_proxies, 'start', start)
     client.post('/api/session', json={'path': 'sample.mp4', 'current_time': 3600})
     result = client.post('/api/source', json={'path': 'sample.mp4', 'native_vod': True})
@@ -180,7 +180,10 @@ def test_native_source_and_seek_use_full_timeline_manager(library, monkeypatch):
         'path': 'sample.mp4', 'native_vod': True, 'current_time': 0,
     })
     assert seek.json()['delivery'] == 'vod'
-    assert calls == [('sample.mp4', 3600), ('sample.mp4', 0)]
+    # Non-Safari clients reuse the same full 240p timeline as well.
+    other = client.post('/api/proxy/start', json={'path': 'sample.mp4', 'current_time': 10})
+    assert other.json()['delivery'] == 'vod'
+    assert calls == [('sample.mp4', 3600), ('sample.mp4', 0), ('sample.mp4', 10)]
 
 
 def test_api_returns_cached_videos_while_directory_reader_is_stuck(library, monkeypatch):
@@ -210,3 +213,22 @@ def test_api_returns_cached_videos_while_directory_reader_is_stuck(library, monk
     assert time.monotonic() - start < 1
     assert len(processes) == 1
     assert client.get('/api/state').status_code == 200
+
+
+def test_selection_queue_returns_before_metadata_and_deduplicates(library, monkeypatch):
+    main, media, client = library
+    (media / 'queued.mp4').write_bytes(b'video')
+    started = threading.Event()
+    async def slow_probe(source):
+        started.set()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(main.proxies, 'probe', slow_probe)
+    begin = time.monotonic()
+    response = client.post('/api/proxy/queue', json={'path': 'queued.mp4'})
+    assert response.status_code == 200 and time.monotonic() - begin < 1
+    job = response.json()
+    assert job['height'] == 240 and job['build_status'] == 'queued'
+    assert (main.proxies.directory(job) / 'job.json').is_file()
+    assert started.wait(1)
+    again = client.post('/api/proxy/queue', json={'path': 'queued.mp4'}).json()
+    assert again['id'] == job['id'] and len(main.proxies.jobs) == 1

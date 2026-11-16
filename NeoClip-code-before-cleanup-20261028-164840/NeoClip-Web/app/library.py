@@ -18,6 +18,7 @@ class VideoLibrary:
         self.interval = interval
         self.timeout = timeout
         self.files = {}
+        self.on_remove = None
         self.removed = set()
         self.save_lock = asyncio.Lock()
         self.task = None
@@ -138,8 +139,12 @@ class VideoLibrary:
             return any(prefix == "." or path == prefix or path.startswith(prefix + "/")
                        for prefix in self.unavailable)
 
+        missing = [path for path in self.files if path not in seen and not failed(path)]
         self.files = {path: item for path, item in self.files.items()
                       if path in seen or failed(path)}
+        if self.on_remove:
+            for path in missing:
+                await self.on_remove(path)
         self.unavailable = list(dict.fromkeys(self.unavailable))
         self.status = ("partial" if self.files else "unavailable") if self.unavailable else "ready"
         self.location = ""

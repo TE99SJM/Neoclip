@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "NeoClip Remote",
-  "short_name": "NeoClip",
+  "name": "NeoClip 240",
+  "short_name": "NeoClip 240",
   "description": "Resume-aware video clipping on your own server",
   "start_url": "/",
   "scope": "/",

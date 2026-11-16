@@ -20,6 +20,8 @@ SEGMENT_SECONDS = 6
 
 
 class VodProxyManager(ProxyManager):
+    height = 360
+
     def __init__(self, root, resolve):
         # Separate cache/schema: old offset EVENT jobs cannot become VOD jobs.
         super().__init__(root / "native-vod-v1", resolve)
@@ -110,7 +112,7 @@ class VodProxyManager(ProxyManager):
         return "\n".join([*lines, "#EXT-X-ENDLIST", ""])
 
     def segment_command(self, job, source, index, target):
-        before, after = pipeline_args(job["mode"])
+        before, after = pipeline_args(job["mode"], height=self.height)
         start = index * SEGMENT_SECONDS
         length = min(SEGMENT_SECONDS, job["duration"] - start)
         return [

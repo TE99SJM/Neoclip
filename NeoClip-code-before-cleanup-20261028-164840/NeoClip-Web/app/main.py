@@ -20,18 +20,17 @@ from .deletion import VideoChangedError, fingerprint, remove_video
 from .library import VideoLibrary
 from .library_scan import scan_directory
 from .metadata import VideoMetadata
-from .proxies import THREADS, ProxyManager, choose_pipeline, pipeline_args
-from .vod import VodProxyManager
+from .persistent_proxy import PersistentProxyManager
+from .proxies import THREADS, choose_pipeline, pipeline_args
 
 
 @asynccontextmanager
 async def lifespan(app):
     library_index.start()
     proxies.reaper = asyncio.create_task(proxies.reap())
-    native_proxies.reaper = asyncio.create_task(native_proxies.reap())
+    proxies.start_background()
     yield
     await proxies.close()
-    await native_proxies.close()
     await library_index.close()
     await video_metadata.close()
     if render_task and not render_task.done():
@@ -39,8 +38,8 @@ async def lifespan(app):
         await asyncio.gather(render_task, return_exceptions=True)
 
 
-app = FastAPI(title="NeoClip Web", lifespan=lifespan)
-APP_BUILD = "2.0.7"
+app = FastAPI(title="NeoClip 240", lifespan=lifespan)
+APP_BUILD = "2.1.0-240"
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
@@ -57,7 +56,7 @@ DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data")).resolve()
 WEB_ROOT = Path(__file__).parent / "web"
 QUEUE_FILE = DATA_ROOT / "neoclip_queue.json"
 PROXY_ROOT = DATA_ROOT / "proxies"
-PROXY_HEIGHT = 360
+PROXY_HEIGHT = 240
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".m4v", ".avi", ".webm"}
 
@@ -142,10 +141,9 @@ def resolve_media_path(relative_path: str) -> Path:
 
 
 video_metadata = VideoMetadata(DATA_ROOT / "video_metadata.json", resolve_media_path)
-proxies = ProxyManager(PROXY_ROOT, resolve_media_path)
+proxies = PersistentProxyManager(PROXY_ROOT, resolve_media_path)
+native_proxies = proxies  # Same durable 240p jobs for Safari and other browsers.
 app.include_router(proxies.router())
-native_proxies = VodProxyManager(PROXY_ROOT, resolve_media_path)
-app.include_router(native_proxies.router())
 app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
 
 
@@ -301,6 +299,7 @@ load_queue()
 
 
 library_index = VideoLibrary(MEDIA_ROOT, DATA_ROOT / "video_library.json")
+library_index.on_remove = proxies.delete_path
 
 
 def list_videos() -> list[dict]:
@@ -661,14 +660,20 @@ async def select_source(request: SourceRequest) -> dict:
             if request.current_time is not None
             else session["current_time"]
         )
-        duration, _ = await proxies.probe(resolve_media_path(request.path))
-        if start >= duration - 0.25:
+        proxy = await proxies.start(request.path, start)
+        if start >= proxy["duration"] - 0.25:
             start = 0
             session["current_time"] = 0
             save_queue()
-        manager = native_proxies if request.native_vod else proxies
-        proxy = await manager.start(request.path, start)
         return {**state_response(), "proxy": proxy}
+
+
+@app.post("/api/proxy/queue")
+async def queue_proxy(request: SourceRequest) -> dict:
+    if request.path in deleting_paths:
+        raise HTTPException(409, "This video is being deleted")
+    job = await proxies.enqueue(request.path, request.current_time or 0)
+    return proxies.view(job)
 
 
 @app.post("/api/proxy/start")
@@ -676,8 +681,7 @@ async def start_proxy(request: SourceRequest) -> dict:
     if request.path in deleting_paths:
         raise HTTPException(409, "This video is being deleted")
     async with media_change_lock:
-        manager = native_proxies if request.native_vod else proxies
-        return await manager.start(request.path, request.current_time or 0)
+        return await proxies.start(request.path, request.current_time or 0)
 
 
 @app.post("/api/media/delete")
@@ -692,7 +696,7 @@ async def delete_media(request: SourceRequest) -> dict:
         async with media_change_lock:
             source = await asyncio.to_thread(resolve_media_path, relative_path)
             expected = await asyncio.to_thread(fingerprint, source)
-            async with video_metadata.pause(MEDIA_ROOT / relative_path):
+            async with video_metadata.pause(MEDIA_ROOT / relative_path), proxies.pause_path(relative_path):
                 if (render_state.get("source_path") == relative_path
                         and render_task is not None and not render_task.done()):
                     task = render_task
@@ -701,9 +705,8 @@ async def delete_media(request: SourceRequest) -> dict:
                     await asyncio.gather(task, return_exceptions=True)
                     render_task = None
 
-                await proxies.delete_path(relative_path)
-                await native_proxies.delete_path(relative_path)
                 await remove_video(source, expected)
+                await proxies.delete_path(relative_path)
 
                 # Only discard edits and cached rows after physical deletion.
                 state["queues"].pop(relative_path, None)
@@ -862,6 +865,6 @@ async def status() -> dict:
         "proxy_directory": str(PROXY_ROOT),
         "build": APP_BUILD,
         "cpu_threads": THREADS,
-        "active_proxy_processes": len(proxies.processes) + len(native_proxies.processes),
+        "active_proxy_processes": len(proxies.processes),
         "pip_note": "Browser/OS support required; open the app directly, not in an embedded frame",
     }

@@ -23,6 +23,9 @@ def application(tmp_path, monkeypatch):
     main = importlib.import_module("app.main")
     monkeypatch.setattr(main, "MEDIA_ROOT", media)
     monkeypatch.setattr(main, "QUEUE_FILE", tmp_path / "queue.json")
+    manager = main.PersistentProxyManager(tmp_path / "proxies", main.resolve_media_path)
+    monkeypatch.setattr(main, "proxies", manager)
+    monkeypatch.setattr(main, "native_proxies", manager)
     monkeypatch.setattr(main, "media_change_lock", asyncio.Lock())
     monkeypatch.setattr(main, "deleting_paths", set())
     monkeypatch.setattr(main, "render_task", None)
@@ -37,7 +40,6 @@ def application(tmp_path, monkeypatch):
         tmp_path / "metadata.json", main.resolve_media_path))
     monkeypatch.setattr(main, "library_index", VideoLibrary(media, tmp_path / "library.json"))
     monkeypatch.setattr(main.proxies, "delete_path", AsyncMock())
-    monkeypatch.setattr(main.native_proxies, "delete_path", AsyncMock())
     source = media / "selected.mp4"
     source.write_bytes(b"original video")
     return main, source
@@ -82,7 +84,6 @@ def test_busy_delete_waits_for_render_and_retries_then_clears_only_selected(appl
         assert json.loads(main.library_index.cache_path.read_text())["files"] == []
         assert not main.deleting_paths and not main.video_metadata.held
         main.proxies.delete_path.assert_awaited_once_with(source.name)
-        main.native_proxies.delete_path.assert_awaited_once_with(source.name)
     asyncio.run(run())
 
 
@@ -106,6 +107,7 @@ def test_failed_delete_retains_source_queue_marks_and_listing(application, monke
         assert len(calls) == attempts
         assert source.exists() and main.state == before
         assert source.name in main.library_index.files
+        main.proxies.delete_path.assert_not_awaited()
         assert not main.deleting_paths and not main.video_metadata.held
     asyncio.run(run())
 
@@ -157,7 +159,7 @@ def test_inflight_preview_finishes_before_delete_and_new_work_is_rejected(applic
             deletion = asyncio.create_task(client.post("/api/media/delete", json={"path": source.name}))
             await asyncio.sleep(0)
             assert source.name in main.deleting_paths and not deletion.done()
-            for endpoint in ("/api/source", "/api/proxy/start", "/api/media/delete"):
+            for endpoint in ("/api/source", "/api/proxy/start", "/api/proxy/queue", "/api/media/delete"):
                 response = await client.post(endpoint, json={"path": source.name})
                 assert response.status_code == 409
             assert (await client.post("/api/render", json={})).status_code == 409

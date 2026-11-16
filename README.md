@@ -1,4 +1,4 @@
-# NeoClip
+# NeoClip 240
 
 **Cut video clips in your browser. Keep the files on your own server.**
 
@@ -19,72 +19,45 @@ NeoClip is a self-hosted video-clipping web interface built with **Python, FastA
 - **Self-hosted media:** Read source files and write exports to directories on your own machine or server.
 - **FFmpeg processing:** Encoding pipeline checks for accelerated options and has a CPU fallback.
 
-## Playback and automatic file updates (v2.0.7)
+## NeoClip 240 branch (v2.1.0-240)
 
-- Deletion releases the browser player, stops the selected video's metadata
-  probe and preview/render jobs, and retries temporary NAS busy errors briefly.
-  Preview startup cannot race deletion. Changed/replaced files are not retried
-  blindly, and clips/marks are retained on failure. Successful deletion removes
-  the cached library row immediately. An external NAS lock or outage may still
-  require stopping another player/transfer and trying again.
-- File-list requests return immediately from a shared background index. Videos
-  appear as they are discovered, without waiting for the entire NAS tree.
-  `/data/video_library.json` preserves the last listing across restarts.
-  Each directory scan runs in an isolated process with a five-second inactivity
-  timeout and a 30-second total budget; slow/unavailable folders are reported
-  and retried while other discovered folders continue. Cached entries are
-  retained for unreadable portions of the tree. Only one scanner runs at once,
-  even if a kernel-blocked NAS operation cannot immediately be terminated.
-- The phone shows scanning/unavailable-folder status instead of waiting on an
-  unbounded request. File/state requests time out after ten seconds and retry;
-  restoring a slow preview no longer blocks list refreshes. This does not repair
-  a disconnected NAS mount or make inaccessible media playable.
-- Each video shows its **name once**, followed by **file size and duration**.
-  Videos in subfolders also show the containing folder without repeating the
-  filename. Existing queued-clip counts remain visible.
-- Durations fill in during the initial background scan and are cached in
-  `/data/video_metadata.json`, including across restarts. At most two FFprobe
-  lookups run at once; directory listings do not wait for these lookups. A size
-  or modification-time change refreshes that video's duration. Incomplete or
-  unreadable videos show an unavailable length and retry after a minute (or
-  immediately when the file changes).
+This branch is based on NeoClip v2.0.7 and keeps its dark editor, native Safari
+slider, replay/seek controls, video details, and background library scans.
 
-- Safari/iOS receives a fixed-duration HLS VOD playlist covering the **entire
-  source**, so the browser can show its native in-video time slider. Seeking
-  requests the corresponding six-second section on demand; the server does not
-  have to convert a long recording in full before playback can begin.
-- Native previews retain the existing 360p GPU pipeline selection and CPU
-  fallback. At most two section encodes run at once, completed sections are
-  cached, and idle work stops. A first visit to an uncached section may buffer
-  briefly. Chrome/Edge/Firefox retain their existing HLS playback path.
-- The dark editing layout follows the video with two skip rows (±10, then ±30),
-  a **Mark In / Add Clip / Mark Out** row, the clock and clip details, full-width
-  Play/Pause and Back to start buttons, Clip Queue, then Render. Playback speed,
-  PiP and timestamp options sit below the main editing flow. Both app copies
-  use the browser's timeline without a separate page slider.
+- Selecting a video queues a **full 240p proxy** in the container immediately.
+  The build continues when playback stops, the page closes, or another video
+  is selected. Clicking several videos queues them; the library scan alone
+  does not queue every file. Browser autoplay is not required.
+- Jobs and completed six-second sections persist under `/data/proxies/240-v1`.
+  Container restarts resume unfinished builds using already completed sections.
+  Keep the existing persistent `/data` mount.
+- One background job builds at a time. At most two pipeline/section operations
+  run at once, allowing requested playback sections to share the same cache.
+  Safari and other browsers use the same fixed-duration VOD timeline, so a
+  long video can play or seek while the rest builds. First-use sections may
+  buffer while encoding. GPU selection and CPU fallback are retained; exports
+  keep their original resolution.
+- A completed proxy expires **14 days after completion**. Watching/reopening
+  does not extend that deadline. Cleanup runs every 30 seconds and on startup.
+  Unfinished jobs also have a 14-day deadline from their initial selection, so
+  an unrecoverable partial build is not retained indefinitely. Temporary build
+  failures retain the queue and retry after one minute.
+- Deleting a source in NeoClip stops its workers, removes the source, and then
+  removes its proxy. If source deletion fails, its cached proxy, marks and clips
+  are kept and the build can resume. Confirmed deletions found by a successful
+  directory scan also remove that file's proxy; unreadable NAS folders do not.
+- Source replacement invalidates the old proxy to avoid serving the wrong
+  video. Selecting an expired/replaced video creates a fresh job.
 
-- At the end of a video, **Replay** returns to the original video's beginning,
-  including when the current preview starts partway through the source.
-- **Back to start** and **Go to time → 00:01** can reach the first frame and first
-  second. Playback recovery treats zero as a valid timestamp.
-- Finished videos reopen at the beginning; clip queues and marks are preserved.
-- A shared background scan checks the configured `MEDIA_ROOT` and its
-  subfolders, waiting five seconds between passes. Visible pages refresh every
-  five seconds. New transfers, renames, modifications,
-  and deletions appear automatically, subject to scan time and NAS caching.
-  Polling also works with SMB/NFS mounts that do not deliver local file events.
-- Returning to the tab refreshes the list immediately. Refreshes do not reload
-  the active video or reset edits, and failed requests retry automatically.
+Both checked-in app copies implement this behavior. This branch does not change
+Docker ports or media/export/data mounts, and does not alter the existing 360p
+cache. Full proxies consume disk space for every selected video. No automatic
+backup step is required to install this branch.
 
-Both checked-in application copies include these fixes. Rebuild/restart the
-deployment using the updated application directory, then reload the web page.
-Existing media/export mounts and saved editing data do not need to change.
-
-Validation includes real FFmpeg audio/silent playback, out-of-order seeks,
-section transitions, cache reuse/restart, native-HLS routing, and the existing
-replay and directory-refresh regressions. The native slider still needs a visual
-check on iPhone Safari after installing this update; it was not device-tested
-in the development environment.
+Validation includes real FFmpeg audio/silent 240p output, full builds with no
+browser requests, queue independence, restart recovery, fixed expiration,
+source deletion, failed-delete retention, and existing playback/library tests.
+iPhone Safari and the server's NVIDIA GPU still require deployment testing.
 
 ## Screenshots and demo
 
@@ -104,7 +77,7 @@ These commands use one of the source copies currently included in the repository
 **Requirements:** Python 3.12, FFmpeg and FFprobe on your PATH, and a folder containing video files. The app supports common video containers including MP4, MKV, MOV, M4V, AVI, and WebM.
 
 ```bash
-git clone https://github.com/TE99SJM/Neoclip.git
+git clone --branch neoclip-240 https://github.com/TE99SJM/Neoclip.git
 cd Neoclip/NeoClip-code-before-cleanup-20261028-164840/NeoClip-Web/neoclip-web
 
 python3.12 -m venv .venv
