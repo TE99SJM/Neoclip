@@ -217,16 +217,16 @@
         </div>
 
         <div class="panel clip-editor">
+            <input id="clipName"
+                   class="field"
+                   aria-label="Clip name (optional)"
+                   placeholder="Clip name (optional)">
             <div class="mark-controls" role="group" aria-label="Clip markers and add clip">
                 <button type="button" onclick="markIn()">Mark In</button>
                 <button type="button" onclick="addClip()">Add Clip</button>
                 <button type="button" onclick="markOut()">Mark Out</button>
             </div>
             <p id="sourceClock" class="status clock" aria-live="off">00:00 / 00:00</p>
-            <input id="clipName"
-                   class="field"
-                   aria-label="Clip name (optional)"
-                   placeholder="Clip name (optional)">
             <p id="markStatus" class="status">
                 IN: not set<br>
                 OUT: not set
