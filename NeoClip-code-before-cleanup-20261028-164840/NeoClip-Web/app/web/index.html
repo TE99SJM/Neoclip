@@ -19,6 +19,25 @@
     <style>
         * { box-sizing: border-box; }
 
+        html { overscroll-behavior-y: contain; }
+
+        .pull-refresh-status {
+            position: fixed;
+            top: calc(env(safe-area-inset-top, 0px) + 12px);
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            max-width: calc(100% - 24px);
+            padding: 12px 18px;
+            border: 1px solid #83cfff;
+            border-radius: 24px;
+            background: #1d1d1d;
+            color: #fff;
+            text-align: center;
+            pointer-events: none;
+            box-shadow: 0 4px 16px #0008;
+        }
+
         body {
             margin: 0;
             padding: 14px;
@@ -173,6 +192,7 @@
 </head>
 
 <body>
+<div id="pullRefreshStatus" class="pull-refresh-status hidden" role="status" aria-live="polite"></div>
 <main>
     <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip Remote</h1>
     <p class="status">GPU-first editing · Resume-aware previews · v2.0.7</p>
@@ -271,6 +291,7 @@
         <p id="fileStatus" class="status">Loading videos…</p>
         <div class="folder-navigation">
             <button id="folderUp" type="button" onclick="openParentFolder()" disabled>← Back</button>
+            <button id="refreshButton" type="button" onclick="refreshEditor()">Refresh</button>
             <nav id="folderBreadcrumbs" class="folder-breadcrumbs" aria-label="Video folders"></nav>
         </div>
         <p id="folderEmpty" class="status hidden" role="status">No videos found in this folder.</p>
@@ -590,7 +611,7 @@
         };
     }
 
-    async function saveEditorSessionNow() {
+    async function saveEditorSessionNow(timeoutMs = 0) {
         if (sessionSaveTimer) {
             clearTimeout(sessionSaveTimer);
             sessionSaveTimer = null;
@@ -609,6 +630,7 @@
         await api("/api/session", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
+            timeoutMs,
             body: serialized
         });
         lastSavedSessionJson = serialized;
@@ -642,6 +664,87 @@
         const body = new Blob([serialized], {type: "application/json"});
         navigator.sendBeacon("/api/session", body);
     }
+
+    let editorRefreshInFlight = false;
+    let pullRefreshGesture = null;
+    const PULL_REFRESH_DISTANCE = 90;
+
+    function showRefreshStatus(message = "") {
+        const status = document.getElementById("pullRefreshStatus");
+        status.textContent = message;
+        status.classList.toggle("hidden", !message);
+    }
+
+    async function refreshEditor() {
+        if (editorRefreshInFlight) return;
+        editorRefreshInFlight = true;
+        pullRefreshGesture = null;
+        document.getElementById("refreshButton").disabled = true;
+        showRefreshStatus("Refreshing…");
+        try {
+            // Do not let a stalled session request block recovery of the app.
+            await saveEditorSessionNow(2500);
+        } catch (_) {
+            try { saveEditorSessionBeacon(); } catch (_) {}
+        } finally {
+            window.location.reload();
+        }
+    }
+
+    function atPageTop() {
+        return Math.max(window.scrollY || 0, document.documentElement.scrollTop || 0,
+                        document.body.scrollTop || 0) <= 0;
+    }
+
+    function resetPullRefresh() {
+        pullRefreshGesture = null;
+        if (!editorRefreshInFlight) showRefreshStatus();
+    }
+
+    document.addEventListener("touchstart", event => {
+        resetPullRefresh();
+        if (editorRefreshInFlight || event.touches.length !== 1 || !atPageTop() ||
+            document.fullscreenElement || event.target.closest?.(
+                "video, input, textarea, select, button, a, [contenteditable]:not([contenteditable=false]), [role=slider]"
+            )) return;
+        // Leave gestures inside independently scrolling panels alone.
+        for (let node = event.target; node && node !== document.body; node = node.parentElement) {
+            if (node.scrollHeight > node.clientHeight &&
+                /auto|scroll/.test(window.getComputedStyle(node).overflowY)) return;
+        }
+        const touch = event.touches[0];
+        pullRefreshGesture = {x: touch.clientX, y: touch.clientY, distance: 0};
+    }, {passive: true});
+
+    document.addEventListener("touchmove", event => {
+        if (!pullRefreshGesture) return;
+        if (event.touches.length !== 1 || !atPageTop()) {
+            resetPullRefresh();
+            return;
+        }
+        const touch = event.touches[0];
+        const down = touch.clientY - pullRefreshGesture.y;
+        const across = Math.abs(touch.clientX - pullRefreshGesture.x);
+        if (down < 0 || across > Math.max(12, down)) {
+            resetPullRefresh();
+            return;
+        }
+        pullRefreshGesture.distance = down;
+        if (down < 12) {
+            showRefreshStatus();
+            return;
+        }
+        if (event.cancelable) event.preventDefault();
+        showRefreshStatus(down >= PULL_REFRESH_DISTANCE
+            ? "Release to refresh" : "Pull down to refresh");
+    }, {passive: false});
+
+    document.addEventListener("touchend", () => {
+        const ready = pullRefreshGesture && pullRefreshGesture.distance >= PULL_REFRESH_DISTANCE;
+        resetPullRefresh();
+        if (ready) void refreshEditor();
+    }, {passive: true});
+    document.addEventListener("touchcancel", resetPullRefresh, {passive: true});
 
     function applyEditorSession(session = {}) {
         pendingResumeSeconds = Math.max(
