@@ -154,6 +154,32 @@
             overflow-wrap: anywhere;
         }
 
+        .folder-navigation {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .folder-breadcrumbs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+            min-width: 0;
+            flex: 1 1 180px;
+        }
+
+        .folder-breadcrumbs button {
+            max-width: 100%;
+            min-height: 48px;
+            overflow-wrap: anywhere;
+            text-align: left;
+        }
+
+        .folder-button { border-left: 4px solid #83cfff; }
+
         .file-button {
             display: block;
             width: 100%;
@@ -315,6 +341,11 @@
     <section class="panel">
         <h2>Videos</h2>
         <p id="fileStatus" class="status">Loading videos…</p>
+        <div class="folder-navigation">
+            <button id="folderUp" type="button" onclick="openParentFolder()" disabled>← Back</button>
+            <nav id="folderBreadcrumbs" class="folder-breadcrumbs" aria-label="Video folders"></nav>
+        </div>
+        <p id="folderEmpty" class="status hidden" role="status">No videos found in this folder.</p>
         <div id="files"></div>
     </section>
 </main>
@@ -820,6 +851,108 @@
     let fileRefreshTimer = null;
     let restoreSessionPending = false;
 
+    let currentFolder = "";
+    let libraryFiles = [];
+    let libraryClipCounts = {};
+    let renderedFolder = null;
+
+    function folderEntries(files, folder) {
+        const prefix = folder ? folder + "/" : "";
+        const folders = new Map();
+        const videos = [];
+        for (const file of files) {
+            if (!file.path.startsWith(prefix)) continue;
+            const relative = file.path.slice(prefix.length);
+            const slash = relative.indexOf("/");
+            if (slash < 0) {
+                videos.push(file);
+            } else {
+                const name = relative.slice(0, slash);
+                if (!folders.has(name)) folders.set(name, {name, path: prefix + name, count: 0});
+                folders.get(name).count++;
+            }
+        }
+        const byName = (a, b) => a.name.localeCompare(b.name, undefined, {numeric: true});
+        return {folders: [...folders.values()].sort(byName), videos: videos.sort(byName)};
+    }
+
+    function openFolder(path) {
+        currentFolder = path;
+        renderFileBrowser();
+    }
+
+    function openParentFolder() {
+        const slash = currentFolder.lastIndexOf("/");
+        openFolder(slash < 0 ? "" : currentFolder.slice(0, slash));
+    }
+
+    function renderFolderNavigation() {
+        if (renderedFolder === currentFolder) return;
+        const nav = document.getElementById("folderBreadcrumbs");
+        nav.innerHTML = "";
+        const crumbs = [{name: "Videos", path: ""}];
+        let path = "";
+        for (const name of currentFolder.split("/").filter(Boolean)) {
+            path = path ? path + "/" + name : name;
+            crumbs.push({name, path});
+        }
+        for (const [index, crumb] of crumbs.entries()) {
+            if (index) {
+                const separator = document.createElement("span");
+                separator.textContent = "/";
+                separator.setAttribute("aria-hidden", "true");
+                nav.appendChild(separator);
+            }
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = crumb.name;
+            button.onclick = () => openFolder(crumb.path);
+            if (crumb.path === currentFolder) button.setAttribute("aria-current", "location");
+            nav.appendChild(button);
+        }
+        document.getElementById("folderUp").disabled = !currentFolder;
+        renderedFolder = currentFolder;
+    }
+
+    function renderFileBrowser() {
+        const box = document.getElementById("files");
+        const scrollTop = box.scrollTop;
+        const {folders, videos} = folderEntries(libraryFiles, currentFolder);
+        renderFolderNavigation();
+        box.innerHTML = "";
+        for (const folder of folders) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "file-button folder-button";
+            button.title = folder.path;
+            button.innerHTML =
+                `<strong><span aria-hidden="true">📁 </span>${escapeHtml(folder.name)}</strong>` +
+                `<span class="path">${folder.count} video${folder.count === 1 ? "" : "s"} · Open folder</span>`;
+            button.onclick = () => openFolder(folder.path);
+            box.appendChild(button);
+        }
+        for (const file of videos) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "file-button";
+            const queuedCount = libraryClipCounts[file.path] || 0;
+            const queuedText = queuedCount
+                ? ` — ${queuedCount} queued clip${queuedCount === 1 ? "" : "s"}` : "";
+            const details = `${formatFileSize(file.size_bytes)} · ${formatFileDuration(file)}`;
+            button.title = file.path;
+            button.innerHTML =
+                `<strong>${escapeHtml(file.name)}${queuedText}</strong>` +
+                `<span class="path">${escapeHtml(details)}</span>`;
+            button.onclick = () => {
+                restoreSessionPending = false;
+                selectVideo(file);
+            };
+            box.appendChild(button);
+        }
+        document.getElementById("folderEmpty").classList.toggle("hidden", Boolean(folders.length || videos.length));
+        box.scrollTop = scrollTop;
+    }
+
     function formatFileSize(value) {
         if (value === null || value === undefined) return "Size unavailable";
         const bytes = Number(value);
@@ -869,30 +1002,9 @@
                 `${savedState.total_queued_clips} unsaved clip(s) queued · ${scanNote}`;
 
             if (fingerprint !== fileListFingerprint) {
-                const box = document.getElementById("files");
-                const scrollTop = box.scrollTop;
-                box.innerHTML = "";
-                for (const file of files) {
-                    const button = document.createElement("button");
-                    button.className = "file-button";
-                    const queuedCount = savedState.clip_counts[file.path] || 0;
-                    const queuedText = queuedCount
-                        ? ` — ${queuedCount} queued clip${queuedCount === 1 ? "" : "s"}` : "";
-                    const folder = file.path.includes("/")
-                        ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
-                    const details = `${formatFileSize(file.size_bytes)} · ${formatFileDuration(file)}` +
-                        (folder ? ` · Folder: ${folder}` : "");
-                    button.title = file.path;
-                    button.innerHTML =
-                        `<strong>${escapeHtml(file.name)}${queuedText}</strong>` +
-                        `<span class="path">${escapeHtml(details)}</span>`;
-                    button.onclick = () => {
-                        restoreSessionPending = false;
-                        selectVideo(file);
-                    };
-                    box.appendChild(button);
-                }
-                box.scrollTop = scrollTop;
+                libraryFiles = files;
+                libraryClipCounts = savedState.clip_counts;
+                renderFileBrowser();
                 fileListFingerprint = fingerprint;
             }
             // Background changes update only the list, never the active player,
