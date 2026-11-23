@@ -6,6 +6,7 @@ playlist never grows or changes, and its time zero is the source's time zero.
 """
 
 import asyncio
+import logging
 import math
 import re
 import time
@@ -16,6 +17,7 @@ from fastapi.responses import FileResponse, Response
 
 from .proxies import THREADS, ProxyManager, choose_pipeline, pipeline_args
 
+log = logging.getLogger(__name__)
 SEGMENT_SECONDS = 6
 
 
@@ -181,7 +183,30 @@ class VodProxyManager(ProxyManager):
                 temporary.replace(target)
                 job.update(error="", message="On-demand preview ready")
         except (RuntimeError, asyncio.TimeoutError, OSError) as exc:
-            job.update(error=str(exc), message="Preview section failed; retry playback")
+            detail = (
+                "FFmpeg timed out after 45 seconds"
+                if isinstance(exc, asyncio.TimeoutError)
+                else str(exc).strip() or "FFmpeg produced no preview data"
+            )
+            job.update(
+                error=detail,
+                message="Preview section failed; retry playback",
+                last_failure={
+                    "segment": index,
+                    "start_seconds": index * SEGMENT_SECONDS,
+                    "mode": job["mode"],
+                    "message": detail,
+                    "occurred_at": time.time(),
+                },
+            )
+            log.warning(
+                "Proxy segment failed: path=%s segment=%s time=%ss mode=%s: %s",
+                job["path"],
+                index,
+                index * SEGMENT_SECONDS,
+                job["mode"],
+                detail,
+            )
             raise HTTPException(
                 503,
                 "Cannot prepare preview section; retry playback",

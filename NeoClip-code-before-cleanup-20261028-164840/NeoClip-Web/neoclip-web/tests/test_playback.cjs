@@ -59,7 +59,7 @@ function setup(offset = 6) {
     vm.createContext(ctx);
     const include=(start,end)=>vm.runInContext(html.slice(html.indexOf(start),html.indexOf(end,html.indexOf(start))),ctx);
     include('    async function seekVideoToSavedTime(', '    async function api(');
-    include('    function editorSessionPayload()', '    async function saveEditorSessionNow()');
+    include('    function editorSessionPayload()', '    async function saveEditorSessionNow(');
     include('    let playbackEnded =', '    function updatePictureInPictureButton()');
     include(html.includes('    function proxyContainsTime(') ? '    function proxyContainsTime(' : '    async function seekSource(', '    function jumpToTime(');
     return {ctx,calls,emit,elements};

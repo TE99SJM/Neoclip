@@ -268,7 +268,17 @@ class PersistentProxyManager(VodProxyManager):
                 job.update(
                     build_status="retrying",
                     retry_after=self.clock() + 60,
-                    error=str(getattr(exc, "detail", exc)),
+                    # The HTTP wrapper is generic; retain the encoder's cause.
+                    error=(
+                        "FFmpeg timed out after 45 seconds"
+                        if isinstance(exc.__cause__, asyncio.TimeoutError)
+                        else str(
+                            getattr(
+                                exc.__cause__ or exc, "detail", exc.__cause__ or exc
+                            )
+                        ).strip()
+                        or "FFmpeg produced no preview data"
+                    ),
                 )
                 try:
                     self.save(job)
