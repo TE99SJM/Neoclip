@@ -250,10 +250,11 @@
         <span id="pullRefreshHandle">↓ Pull down here to refresh</span>
         <button id="playerRefreshButton" type="button" onclick="refreshEditor()">Refresh</button>
     </div>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.0.8</p>
+    <p class="status">GPU-first editing · Resume-aware previews · v2.0.9</p>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
+        <button class="field" id="renameVideoButton" onclick="renameVideo()">Rename video</button>
         <button id="retryPreviewButton" class="hidden" type="button" onclick="retryPreview()">Retry preview</button>
 
 
@@ -1208,6 +1209,7 @@
                 const status = await api(proxyStatusUrl(currentProxy));
                 if (currentProxy?.id !== status.id) return;
                 currentProxy = status;
+                if (adoptRenamedVideo(path, status.path)) return;
                 showPipeline(status);
                 if (status.status === "error" || status.status === "stopped") {
                     document.getElementById("pipelineStatus").textContent =
@@ -1464,6 +1466,86 @@
             resumeVisiblePlayer();
         }
     });
+
+    // FILE_RENAME_START
+    function adoptRenamedVideo(oldPath, newPath) {
+        if (!oldPath || !newPath || oldPath === newPath || currentSourcePath !== oldPath) return false;
+        const saved = editorSessionPayload();
+        const needsRecovery = previewRecovery.pending() || !!video.error ||
+            ['stopped', 'error'].includes(currentProxy?.status);
+        previewRecovery.cancel();
+        currentSourcePath = newPath;
+        if (activeFile) activeFile = {...activeFile, path: newPath, name: newPath.split('/').pop(),
+            original_url: `/api/media?path=${encodeURIComponent(newPath)}`};
+        if (currentProxy) currentProxy.path = newPath;
+        lastSavedSessionJson = '';
+        document.getElementById('selectedFile').textContent = newPath;
+        if (!deletionBusy) {
+            if (currentProxy) startHeartbeat(newPath);
+            scheduleEditorSessionSave(true);
+            if (needsRecovery) previewRecovery.request({manual: true, current_time: saved.current_time,
+                autoplay: userWantsPlayback && !playbackEnded});
+        }
+        return true;
+    }
+
+    async function renameVideo() {
+        if (!currentSourcePath || deletionBusy || selectionBusy) return;
+        const oldPath = currentSourcePath;
+        const name = window.prompt('Rename video (keep the file extension):', oldPath.split('/').pop());
+        if (name === null || name.trim() === oldPath.split('/').pop()) return;
+        if (!name.trim()) { alert('Enter a filename.'); return; }
+        const saved = editorSessionPayload();
+        const autoplay = userWantsPlayback && !playbackEnded;
+        deletionBusy = true;
+        try {
+            await saveEditorSessionNow(2500);
+        } catch (error) {
+            deletionBusy = false;
+            alert('Could not save your edits before renaming: ' + error.message);
+            return;
+        }
+        previewRecovery.cancel();
+        pendingResumeSeconds = saved.current_time;
+        restoringPlayhead = true;
+        if (typeof cancelPendingSeeks === 'function') cancelPendingSeeks();
+        ++proxyWatchToken;
+        stopHeartbeat();
+        currentlyUsingProxy = false;
+        destroyHls();
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+        let notice = '';
+        try {
+            const result = await api('/api/media/rename', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, timeoutMs: 15000,
+                body: JSON.stringify({path: oldPath, name: name.trim()}),
+            });
+            adoptRenamedVideo(oldPath, result.path);
+            notice = result.warning || '';
+        } catch (error) {
+            // The rename may have finished after a lost response. A cached
+            // preview's stable ID lets us find its current source name safely.
+            if (currentProxy) {
+                try {
+                    const status = await api(proxyStatusUrl(currentProxy), {timeoutMs: 5000});
+                    if (status.id === currentProxy.id) adoptRenamedVideo(oldPath, status.path);
+                } catch (_) {}
+            }
+            notice = currentSourcePath === oldPath ? 'Rename failed: ' + error.message
+                : 'Video renamed. The server response was interrupted.';
+        } finally {
+            deletionBusy = false;
+            currentlyUsingProxy = true;
+            pendingResumeSeconds = saved.current_time;
+            if (currentProxy) startHeartbeat(currentSourcePath);
+            previewRecovery.request({manual: true, current_time: saved.current_time, autoplay});
+        }
+        if (notice) alert(notice);
+        await Promise.allSettled([loadState(), loadFiles()]);
+    }
+    // FILE_RENAME_END
 
     async function deleteVideo() {
         if (!currentSourcePath || deletionBusy || selectionBusy) return;
@@ -2193,6 +2275,12 @@
         try {
             const data = await api("/api/render/status");
 
+            if (data.renamed_from === currentSourcePath && currentProxy && !deletionBusy && !selectionBusy) {
+                const status = await api(proxyStatusUrl(currentProxy), {timeoutMs: 5000});
+                if (status.id === currentProxy?.id && status.path === data.renamed_to) {
+                    adoptRenamedVideo(data.renamed_from, data.renamed_to);
+                }
+            }
             document.getElementById("progress").value = data.progress;
 
             document.getElementById("renderStatus").textContent =

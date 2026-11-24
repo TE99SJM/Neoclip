@@ -305,6 +305,8 @@ class VodProxyManager(ProxyManager):
             self.tasks.pop(key, None)
 
     async def segment(self, job, index):
+        if job["path"] in getattr(self, "renaming_paths", ()):
+            raise HTTPException(409, "This video is being renamed")
         if not 0 <= index < math.ceil(job["duration"] / SEGMENT_SECONDS):
             raise HTTPException(404, "Segment not found")
         source = self.resolve(job["path"])
