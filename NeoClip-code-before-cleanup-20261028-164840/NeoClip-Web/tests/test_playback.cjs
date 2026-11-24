@@ -11,6 +11,7 @@ function setup(offset = 6) {
     const listeners = {}, elements = new Map(), calls = {loads: [], starts: [], saves: 0};
     let time = 12 - offset;
     const ctx = {
+        previewRecovery: {pending:()=>false, busy:()=>false, cancel() {}},
         console, Date, Math, Number, setTimeout, clearTimeout,
         activeFile: {path:'sample.mp4'}, currentSourcePath:'sample.mp4',
         selectionBusy:false, sourceDuration:12, proxyOffset:offset,

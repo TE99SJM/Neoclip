@@ -21,6 +21,10 @@
 
         html { overscroll-behavior-y: contain; }
 
+        .refresh-handle { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
+        .refresh-handle span { flex: 1; padding: 14px 0; color: #aaa; touch-action: pan-x; user-select: none; -webkit-user-select: none; }
+        .refresh-handle button { flex: 0 0 auto; }
+
         .pull-refresh-status {
             position: fixed;
             top: calc(env(safe-area-inset-top, 0px) + 12px);
@@ -195,10 +199,16 @@
 <div id="pullRefreshStatus" class="pull-refresh-status hidden" role="status" aria-live="polite"></div>
 <main>
     <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip Remote</h1>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.0.7</p>
+    <div class="refresh-handle">
+        <span id="pullRefreshHandle">↓ Pull down here to refresh</span>
+        <button id="playerRefreshButton" type="button" onclick="refreshEditor()">Refresh</button>
+    </div>
+    <p class="status">GPU-first editing · Resume-aware previews · v2.0.8</p>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
+        <button id="retryPreviewButton" class="hidden" type="button" onclick="retryPreview()">Retry preview</button>
+
 
         <video id="video"
                controls
@@ -355,7 +365,9 @@
         return status.status_url || `/api/proxy/status?id=${status.id}`;
     }
 
+    let cancelMediaLoad = null;
     function setVideoSrc(url) {
+        if (cancelMediaLoad) cancelMediaLoad();
         destroyHls();
 
         const isHls = url.includes("/api/proxy/playlist") || url.includes(".m3u8");
@@ -368,6 +380,7 @@
             );
 
             const cleanup = () => {
+                cancelMediaLoad = null;
                 clearTimeout(timeout);
                 video.removeEventListener("loadedmetadata", onReady);
                 video.removeEventListener("error", onError);
@@ -376,6 +389,7 @@
             const onReady = () => { cleanup(); resolve(); };
             const onError = () => { cleanup(); reject(new Error("Media could not be loaded")); };
 
+            cancelMediaLoad = () => { cleanup(); reject(new Error("Preview attachment replaced")); };
             video.addEventListener("loadedmetadata", onReady);
             video.addEventListener("error", onError);
 
@@ -491,6 +505,7 @@
         let lastError = null;
 
         while (Date.now() < deadline) {
+            if (video.error) throw new Error("Preview data could not be decoded");
             if (watchToken !== proxyWatchToken) throw new Error("Selection changed");
             let target = requestedTime;
 
@@ -593,7 +608,7 @@
 
         const displayedTime = sourceTime();
         const currentTime = (
-            currentlyUsingProxy &&
+            currentlyUsingProxy && !video.error && video.readyState !== 0 &&
             !restoringPlayhead &&
             Number.isFinite(displayedTime)
                 ? displayedTime
@@ -680,6 +695,7 @@
         editorRefreshInFlight = true;
         pullRefreshGesture = null;
         document.getElementById("refreshButton").disabled = true;
+        document.getElementById("playerRefreshButton").disabled = true;
         showRefreshStatus("Refreshing…");
         try {
             // Do not let a stalled session request block recovery of the app.
@@ -693,7 +709,7 @@
 
     function atPageTop() {
         return Math.max(window.scrollY || 0, document.documentElement.scrollTop || 0,
-                        document.body.scrollTop || 0) <= 0;
+                        document.body.scrollTop || 0) <= 2;
     }
 
     function resetPullRefresh() {
@@ -730,6 +746,7 @@
             return;
         }
         pullRefreshGesture.distance = down;
+        if (down > 0 && event.cancelable) event.preventDefault();
         if (down < 12) {
             showRefreshStatus();
             return;
@@ -977,7 +994,7 @@
     let heartbeatTimer = null;
 
     video.addEventListener("timeupdate", () => {
-        if (currentlyUsingProxy && !restoringPlayhead) {
+        if (currentlyUsingProxy && !video.error && !restoringPlayhead) {
             pendingResumeSeconds = Math.max(
                 0,
                 sourceTime()
@@ -1066,16 +1083,153 @@
 
     video.addEventListener("pause", () => {
         // Do not treat a pause caused by buffering as an intentional pause.
-        if (!video.ended && video.readyState >= 3) {
+        if (!video.ended && !video.error && video.readyState >= 3 &&
+                document.visibilityState !== 'hidden' && !restoringPlayhead && !previewRecovery.pending()) {
             userWantsPlayback = false;
         }
     });
+
+    // RECOVERY_CONTROLLER_START
+    function createPreviewRecovery({snapshot, visible, connect, report}) {
+        const delays = [500, 2000, 5000];
+        let timer = null, active = null, wanted = null, attempts = 0;
+        let lastPath = null, stableTimer = null, stableTime = null;
+        const clearStable = () => { clearTimeout(stableTimer); stableTimer = null; stableTime = null; };
+        function schedule() {
+            if (!wanted || active || timer !== null || !visible() || snapshot()?.path !== wanted.path) return;
+            if (attempts >= delays.length) {
+                report('failed', 'Preview unavailable. Tap Retry preview to reconnect.');
+                return;
+            }
+            report('waiting', `Reconnecting preview (${attempts + 1}/${delays.length})…`);
+            timer = setTimeout(run, delays[attempts]);
+        }
+        async function run() {
+            timer = null;
+            if (!visible() || !wanted || active || snapshot()?.path !== wanted.path) return;
+            const saved = wanted, ticket = {};
+            active = ticket;
+            attempts += 1;
+            const valid = () => active === ticket && snapshot()?.path === saved.path;
+            try {
+                await connect(saved, valid);
+                if (!valid()) return;
+                wanted = null;
+                report('ready', `Preview restored at ${saved.current_time.toFixed(1)}s.`);
+                // Rapid repeat failures share one retry budget. Reset only
+                // after real progress or a stable paused preview.
+                stableTime = saved.current_time;
+                stableTimer = setTimeout(() => { attempts = 0; clearStable(); }, 30000);
+            } catch (error) {
+                if (valid()) report('waiting', `Preview reconnect failed: ${error.message}`);
+            } finally {
+                if (active === ticket) { active = null; schedule(); }
+            }
+        }
+        return {
+            request({manual = false, ...overrides} = {}) {
+                const state = snapshot();
+                if (!state || active) return;
+                if (lastPath !== state.path) { attempts = 0; lastPath = state.path; wanted = null; }
+                clearStable();
+                wanted ||= state;
+                if (manual) { attempts = 0; Object.assign(wanted, overrides); clearTimeout(timer); timer = null; }
+                schedule();
+            },
+            resume() { schedule(); },
+            pending() { return !!(wanted || active); },
+            busy() { return !!active; },
+            progress(time) {
+                if (stableTime !== null && time >= stableTime + 2) { attempts = 0; clearStable(); }
+            },
+            cancel() {
+                clearTimeout(timer); timer = null; active = null; wanted = null;
+                attempts = 0; lastPath = null; clearStable();
+            },
+        };
+    }
+    // RECOVERY_CONTROLLER_END
+
+    const previewRecovery = createPreviewRecovery({
+        snapshot: () => {
+            if (!currentSourcePath || !activeFile || deletionBusy || selectionBusy) return null;
+            return {...editorSessionPayload(), autoplay: userWantsPlayback && !playbackEnded};
+        },
+        visible: () => document.visibilityState !== 'hidden',
+        report: (phase, message) => {
+            restoringPlayhead = phase !== 'ready';
+            document.getElementById('selectedFile').textContent = message;
+            document.getElementById('retryPreviewButton').classList.toggle('hidden', phase === 'ready');
+            if (phase === 'failed' && typeof clearPlayerLoading === 'function') clearPlayerLoading('recovery');
+        },
+        connect: async (saved, valid) => {
+            const token = ++proxyWatchToken;
+            pendingResumeSeconds = saved.current_time;
+            restoringPlayhead = true;
+            if (typeof setPlayerLoading === 'function') setPlayerLoading('recovery', 'Reconnecting preview…');
+            try {
+                const status = await api('/api/proxy/start', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, timeoutMs: 10000,
+                    body: JSON.stringify({path: saved.path, current_time: saved.current_time, native_vod: usesNativeHls()}),
+                });
+                if (!valid()) return;
+                if (!status.playable) throw new Error('Preview is still being prepared');
+                currentProxy = status;
+                proxyOffset = status.start_seconds;
+                sourceDuration = status.duration;
+                currentlyUsingProxy = true;
+                startHeartbeat(saved.path);
+                showPipeline(status);
+                await setVideoSrc(status.url);
+                if (!valid()) return;
+                await seekVideoToSavedTime(Math.min(saved.current_time, Math.max(0, sourceDuration - .2)), token);
+                if (!valid()) return;
+                if (video.error) throw new Error('The preview decoder could not restart');
+                if (saved.autoplay) {
+                    let playTimeout;
+                    try {
+                        await Promise.race([video.play(), new Promise((_, reject) => {
+                            playTimeout = setTimeout(() => reject(new Error('Playback restart timed out')), 8000);
+                        })]);
+                    } catch (error) {
+                        if (error.name !== 'NotAllowedError') throw error;
+                        document.getElementById('pipHelp').textContent = 'Preview restored. Tap Play to continue.';
+                    } finally { clearTimeout(playTimeout); }
+                } else video.pause();
+                if (!valid()) return;
+                updateSourceClock();
+                scheduleEditorSessionSave(true);
+            } finally {
+                if (valid()) {
+                    if (typeof clearPlayerLoading === 'function') clearPlayerLoading('recovery');
+                }
+            }
+        },
+    });
+    function retryPreview() { previewRecovery.request({manual: true}); }
+    function resumePreviewRecovery() {
+        if (document.visibilityState === 'hidden' || selectionBusy || deletionBusy) return;
+        if (currentSourcePath && currentlyUsingProxy && !restoringPlayhead &&
+                (video.error || video.readyState === 0)) previewRecovery.request();
+        previewRecovery.resume();
+    }
+    video.addEventListener('error', () => {
+        if (typeof resetPlayerLoading === 'function') resetPlayerLoading();
+        if (!restoringPlayhead && currentlyUsingProxy) previewRecovery.request();
+    });
+    video.addEventListener('timeupdate', () => {
+        if (!video.error && !restoringPlayhead && currentlyUsingProxy) previewRecovery.progress(sourceTime());
+    });
+    document.addEventListener('visibilitychange', resumePreviewRecovery);
+    window.addEventListener('pageshow', resumePreviewRecovery);
+    window.addEventListener('online', resumePreviewRecovery);
+
 
     function startPlaybackWatchdog() {
         if (playbackWatchdogTimer) return;
 
         playbackWatchdogTimer = setInterval(async () => {
-            if (!hls || !userWantsPlayback || video.ended) {
+            if (!hls || !userWantsPlayback || video.ended || restoringPlayhead || previewRecovery.pending() || video.error) {
                 watchdogLastTime = Number(video.currentTime) || 0;
                 watchdogStuckChecks = 0;
                 return;
@@ -1147,6 +1301,8 @@
 
         deletionBusy = true;
         const savedSession = editorSessionPayload();
+        previewRecovery.cancel();
+        restoringPlayhead = false;
         pendingResumeSeconds = savedSession.current_time;
 
         proxyWatchToken += 1;
@@ -1208,7 +1364,10 @@
         }
         selectionBusy = true;
         try {
-        await saveEditorSessionNow().catch(() => {});
+        await saveEditorSessionNow(2500).catch(() => {});
+        previewRecovery.cancel();
+        restoringPlayhead = false;
+        document.getElementById("retryPreviewButton").classList.add("hidden");
 
         proxyWatchToken += 1;
         const thisWatchToken = proxyWatchToken;
@@ -1451,6 +1610,11 @@
     });
 
     function togglePlayback() {
+        if (video.error || previewRecovery.pending()) {
+            playbackEnded = false;
+            updatePlaybackButton();
+            return previewRecovery.request({manual: true, autoplay: true});
+        }
         if (playbackEnded || video.ended) {
             return seekSource(0, {autoplay: true});
         }
@@ -1540,6 +1704,15 @@
     video.addEventListener("loadeddata", updatePictureInPictureButton);
 
     async function seekSource(seconds, {autoplay} = {}) {
+        if (video.error || previewRecovery.pending()) {
+            if (previewRecovery.busy()) return;
+            playbackEnded = false;
+            updatePlaybackButton();
+            const target = Math.min(Math.max(Number(seconds) || 0, 0), Math.max(0, sourceDuration - .2));
+            pendingResumeSeconds = target;
+            return previewRecovery.request({manual: true, current_time: target,
+                autoplay: autoplay === undefined ? userWantsPlayback : autoplay});
+        }
         if (!activeFile || !currentProxy || selectionBusy) return;
         playbackEnded = false;
         updatePlaybackButton();

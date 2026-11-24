@@ -40,7 +40,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip Web", lifespan=lifespan)
-APP_BUILD = "2.0.7"
+APP_BUILD = "2.0.8"
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
@@ -865,3 +865,4 @@ async def status() -> dict:
         "active_proxy_processes": len(proxies.processes) + len(native_proxies.processes),
         "pip_note": "Browser/OS support required; open the app directly, not in an embedded frame",
     }
+
