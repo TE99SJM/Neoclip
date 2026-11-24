@@ -125,3 +125,10 @@ NeoClip is free, open-source software licensed under the [GNU Affero General Pub
 - **Keep the notices.** Keep the `LICENSE` file and copyright notices, mark what you changed, and keep the link to the source code in the app.
 
 This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the [LICENSE](LICENSE) for details.
+
+## 2.1.2-240: source filenames
+
+Select a video and use **Rename video** to change its filename in the same folder. The original extension is preserved (and added if omitted). Queued clips, saved marks, playback position and existing proxy IDs follow the new name. Existing destination files are never overwritten; renaming waits until that video's active render finishes.
+
+After all clips in a successful render finish, NeoClip appends ` clipped` before the source extension: `movie.mkv` becomes `movie clipped.mkv`. The suffix is not repeated. Failed/cancelled renders do not mark the source; newly queued clips defer marking until they are processed. If the NAS denies a rename or the destination already exists, the successful exports remain available and the render status explains the filename warning. The 240p cache's retention deadline is unchanged.
+
