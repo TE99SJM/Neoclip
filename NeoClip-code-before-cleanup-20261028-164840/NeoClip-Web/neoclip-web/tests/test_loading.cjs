@@ -57,9 +57,8 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     await sleep(180);
     assert.equal(visible(), false, "intentional pause has no phantom spinner");
     ctx.setPlayerLoading("proxy", "Preparing preview…");
-    event("error");
+    ctx.resetPlayerLoading(); // Media-error recovery is exercised in test_recovery.cjs.
     assert.equal(visible(), false);
-    assert.match(elements.get("selectedFile").textContent, /could not be loaded/);
     let heartbeats = 0;
     const loads = [];
     Object.assign(ctx, {

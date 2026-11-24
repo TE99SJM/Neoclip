@@ -8,6 +8,7 @@ async function exercise(fail) {
     const saved = {path:'selected.mp4',current_time:90,mark_in:2,mark_out:4,clip_name:'Keep me'};
     let release;
     const ctx = {
+        previewRecovery: {pending:()=>false, busy:()=>false, cancel() {}},
         currentSourcePath:'selected.mp4',deletionBusy:false,selectionBusy:false,
         pendingResumeSeconds:0,proxyWatchToken:1,currentlyUsingProxy:true,currentProxy:{id:1},
         sessionSaveTimer:1,markInSeconds:2,markOutSeconds:4,lastSavedSessionJson:'saved',activeFile:{path:'selected.mp4'},

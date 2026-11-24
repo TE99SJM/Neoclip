@@ -8,6 +8,7 @@ const functions = html.slice(html.indexOf("    function proxyContainsTime("),
 function setup() {
     const calls = {api: [], attachments: 0, loads: [], saves: 0};
     const ctx = {
+        previewRecovery: {pending:()=>false, busy:()=>false, cancel() {}},
         console, Date, setTimeout, clearTimeout,
         activeFile: {path: "test.mp4"}, selectionBusy: false,
         sourceDuration: 4000, proxyOffset: 3600, currentlyUsingProxy: true,
