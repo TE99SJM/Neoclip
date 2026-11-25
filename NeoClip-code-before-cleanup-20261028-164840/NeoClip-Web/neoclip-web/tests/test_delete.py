@@ -78,7 +78,8 @@ def test_busy_delete_waits_for_render_and_retries_then_clears_only_selected(appl
         assert response.status_code == 200, response.text
         assert response.json()["exists"] is False
         assert len(attempts) == 3 and not source.exists()
-        assert main.state["queues"] == {"other.mp4": [{"name": "other"}]}
+        assert set(main.state["queues"]) == {"other.mp4"}
+        assert [c["name"] for c in main.state["queues"]["other.mp4"]] == ["other"]
         assert not main.state["editor_sessions"] and main.state["source_path"] == ""
         assert main.library_index.files == {}
         assert json.loads(main.library_index.cache_path.read_text())["files"] == []

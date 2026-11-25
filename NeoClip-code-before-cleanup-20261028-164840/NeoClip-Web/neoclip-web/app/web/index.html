@@ -242,7 +242,7 @@
 <div id="pullRefreshStatus" class="pull-refresh-status hidden" role="status" aria-live="polite"></div>
 <main>
     <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip 240</h1>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.1.0-240</p>
+    <p class="status">GPU-first editing · Resume-aware previews · v2.1.0-240-shared</p>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
@@ -959,7 +959,7 @@
     let libraryClipCounts = {};
     let renderedFolder = null;
 
-    function folderEntries(files, folder) {
+    function folderEntries(files, folder, clipCounts = libraryClipCounts) {
         const prefix = folder ? folder + "/" : "";
         const folders = new Map();
         const videos = [];
@@ -971,8 +971,9 @@
                 videos.push(file);
             } else {
                 const name = relative.slice(0, slash);
-                if (!folders.has(name)) folders.set(name, {name, path: prefix + name, count: 0});
+                if (!folders.has(name)) folders.set(name, {name, path: prefix + name, count: 0, videosWithClips: 0});
                 folders.get(name).count++;
+                if (Number(clipCounts[file.path]) > 0) folders.get(name).videosWithClips++;
             }
         }
         const byName = (a, b) => a.name.localeCompare(b.name, undefined, {numeric: true});
@@ -1030,7 +1031,7 @@
             button.title = folder.path;
             button.innerHTML =
                 `<strong><span aria-hidden="true">📁 </span>${escapeHtml(folder.name)}</strong>` +
-                `<span class="path">${folder.count} video${folder.count === 1 ? "" : "s"} · Open folder</span>`;
+                `<span class="path">${folder.count} video${folder.count === 1 ? "" : "s"} · ${folder.videosWithClips} with clips · Open folder</span>`;
             button.onclick = () => openFolder(folder.path);
             box.appendChild(button);
         }
@@ -1090,11 +1091,13 @@
     async function refreshFiles({restoreLastSession = false} = {}) {
         try {
             if (restoreLastSession) restoreSessionPending = true;
+            const queuePath = currentSourcePath;
             const [listing, savedState] = await Promise.all([
                 api("/api/files?details=true", {cache: "no-store", timeoutMs: 10000}),
-                api("/api/state", {cache: "no-store", timeoutMs: 10000})
+                api(queueStateUrl(), {cache: "no-store", timeoutMs: 10000})
             ]);
             const {files, scan} = listing;
+            if (queuePath === currentSourcePath) renderClipQueue(savedState);
             const scanNote = scan.status === "scanning" ? "Scanning video folders…" :
                 scan.status === "ready" ? "Auto-refresh on" :
                 `Some folders could not be read — retrying${scan.unavailable.length
@@ -1952,6 +1955,7 @@
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({
+                    path: currentSourcePath,
                     name,
                     start_s: markInSeconds,
                     end_s: markOutSeconds
@@ -1971,20 +1975,34 @@
         }
     }
 
-    async function removeClip(index) {
-        await api(`/api/clips/${index}`, {method: "DELETE"});
+    async function removeClip(index, clipId) {
+        const query = new URLSearchParams({path: currentSourcePath || "", clip_id: clipId});
+        await api(`/api/clips/${index}?${query}`, {method: "DELETE"});
         await loadState();
         await loadFiles();
     }
 
     async function clearClips() {
-        await api("/api/clips", {method: "DELETE"});
+        await api(`/api/clips?path=${encodeURIComponent(currentSourcePath || "")}`, {method: "DELETE"});
         await loadState();
         await loadFiles();
     }
 
+    function queueStateUrl() {
+        return "/api/state" + (currentSourcePath ? "?path=" + encodeURIComponent(currentSourcePath) : "");
+    }
+
     async function loadState() {
-        const data = await api("/api/state");
+        const path = currentSourcePath;
+        const data = await api(queueStateUrl());
+        if (path === currentSourcePath) renderClipQueue(data);
+    }
+
+    let renderedQueueSignature = "";
+    function renderClipQueue(data) {
+        const signature = JSON.stringify([data.source_path, data.clips]);
+        if (signature === renderedQueueSignature) return;
+        renderedQueueSignature = signature;
         const list = document.getElementById("clipList");
         list.innerHTML = "";
 
@@ -2004,7 +2022,8 @@
                 `<span class="status">${formatTime(clip.start_s)} → ` +
                 `${formatTime(clip.end_s)}</span>` +
                 `</div>` +
-                `<button onclick="removeClip(${i})">Remove</button>`;
+                `<button type="button">Remove</button>`;
+            row.querySelector("button").onclick = () => removeClip(i, clip.id);
 
             list.appendChild(row);
         }
@@ -2019,7 +2038,7 @@
             await api("/api/render", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({mode, prefix})
+                body: JSON.stringify({mode, prefix, path: currentSourcePath})
             });
         } catch (error) {
             alert(error.message);

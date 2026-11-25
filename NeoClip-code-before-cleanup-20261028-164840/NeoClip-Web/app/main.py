@@ -1,11 +1,11 @@
 import asyncio
 import errno
-import json
 import math
 import os
 import re
 import shutil
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -22,6 +22,7 @@ from .library_scan import scan_directory
 from .metadata import VideoMetadata
 from .persistent_proxy import PersistentProxyManager
 from .proxies import THREADS, choose_pipeline, pipeline_args
+from .queue_store import QueueStore
 
 
 @asynccontextmanager
@@ -39,7 +40,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip 240", lifespan=lifespan)
-APP_BUILD = "2.1.0-240"
+APP_BUILD = "2.1.0-240-shared"
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
@@ -54,7 +55,7 @@ MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", "/media")).resolve()
 EXPORT_ROOT = Path(os.getenv("EXPORT_ROOT", "/exports")).resolve()
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data")).resolve()
 WEB_ROOT = Path(__file__).parent / "web"
-QUEUE_FILE = DATA_ROOT / "neoclip_queue.json"
+QUEUE_FILE = Path(os.getenv("NEOCLIP_QUEUE_FILE", str(DATA_ROOT / "neoclip_queue.json")))
 PROXY_ROOT = DATA_ROOT / "proxies"
 PROXY_HEIGHT = 240
 
@@ -72,12 +73,14 @@ class SourceRequest(BaseModel):
 
 
 class ClipRequest(BaseModel):
+    path: Optional[str] = None
     name: str = ""
     start_s: float = Field(ge=0, allow_inf_nan=False)
     end_s: float = Field(gt=0, allow_inf_nan=False)
 
 
 class RenderRequest(BaseModel):
+    path: Optional[str] = None
     mode: str = "individual"
     prefix: str = "neoclip_output"
 
@@ -242,57 +245,44 @@ def state_response() -> dict:
     }
 
 
-def save_queue() -> None:
-    payload = {
-        "version": 3,
-        "source_path": state["source_path"],
-        "queues": state["queues"],
-        "editor_sessions": state["editor_sessions"],
-    }
+_queue_store = None
 
-    temporary_file = QUEUE_FILE.with_suffix(".tmp")
-    temporary_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    temporary_file.replace(QUEUE_FILE)
+
+def queue_store():
+    global _queue_store
+    if (_queue_store is None or _queue_store.path != QUEUE_FILE
+            or _queue_store.state is not state):
+        _queue_store = QueueStore(QUEUE_FILE, state)
+    return _queue_store
+
+
+def save_queue() -> None:
+    queue_store().save()
 
 
 def load_queue() -> None:
-    if not QUEUE_FILE.exists():
-        return
+    queue_store().refresh(startup=True)
 
+
+def refresh_queue(path=None):
+    store = queue_store()
+    store.refresh()
+    if path is not None:
+        state["source_path"] = store.resolve(path)
+
+
+def render_lease():
     try:
-        data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return
+        return queue_store().acquire_render()
+    except BlockingIOError as exc:
+        raise HTTPException(409, "A render or file change is running in the other NeoClip app. Wait for it to finish.") from exc
 
-        source_path = str(data.get("source_path", ""))
-        state["source_path"] = source_path
 
-        queues = data.get("queues")
-        if isinstance(queues, dict):
-            state["queues"] = {
-                str(path): clips
-                for path, clips in queues.items()
-                if isinstance(clips, list)
-            }
-        else:
-            # Migrate the original single-video queue format automatically.
-            clips = data.get("clips", [])
-            if source_path and isinstance(clips, list):
-                state["queues"] = {source_path: clips}
-
-        sessions = data.get("editor_sessions")
-        if isinstance(sessions, dict):
-            state["editor_sessions"] = {
-                str(path): normalize_editor_session(session)
-                for path, session in sessions.items()
-                if isinstance(session, dict)
-            }
-
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        # Keep the application usable if the queue file is damaged.
-        state["source_path"] = ""
-        state["queues"] = {}
-        state["editor_sessions"] = {}
+async def shared_render(lease, *args):
+    try:
+        await render_job(*args)
+    finally:
+        lease.close()
 
 
 load_queue()
@@ -591,6 +581,7 @@ async def render_job(
 
         # Remove only the rendered snapshot, not newly queued clips or a
         # different video's queue selected while this job was running.
+        refresh_queue()
         remaining = state["queues"].get(rendered_source, [])
         for clip in clips:
             if clip in remaining:
@@ -646,6 +637,8 @@ async def get_media(path: str) -> FileResponse:
 
 @app.post("/api/source")
 async def select_source(request: SourceRequest) -> dict:
+    refresh_queue()
+    request.path = queue_store().resolve(request.path)
     if request.path in deleting_paths:
         raise HTTPException(409, "This video is being deleted")
     async with media_change_lock:
@@ -663,7 +656,7 @@ async def select_source(request: SourceRequest) -> dict:
         proxy = await proxies.start(request.path, start)
         if start >= proxy["duration"] - 0.25:
             start = 0
-            session["current_time"] = 0
+            state["editor_sessions"][request.path]["current_time"] = 0
             save_queue()
         return {**state_response(), "proxy": proxy}
 
@@ -705,15 +698,12 @@ async def delete_media(request: SourceRequest) -> dict:
                     await asyncio.gather(task, return_exceptions=True)
                     render_task = None
 
-                await remove_video(source, expected)
+                with render_lease():
+                    await remove_video(source, expected)
                 await proxies.delete_path(relative_path)
 
                 # Only discard edits and cached rows after physical deletion.
-                state["queues"].pop(relative_path, None)
-                state["editor_sessions"].pop(relative_path, None)
-                if state.get("source_path") == relative_path:
-                    state["source_path"] = ""
-                save_queue()
+                queue_store().forget(relative_path)
                 await library_index.forget(relative_path)
                 await video_metadata.forget(MEDIA_ROOT / relative_path)
                 return {"ok": True, "deleted": relative_path, "exists": False}
@@ -730,12 +720,15 @@ async def delete_media(request: SourceRequest) -> dict:
 
 
 @app.get("/api/state")
-async def get_state() -> dict:
+async def get_state(path: Optional[str] = None) -> dict:
+    refresh_queue(path)
     return state_response()
 
 
 @app.post("/api/session")
 async def save_editor_session(request: EditorSessionRequest) -> dict:
+    refresh_queue()
+    request.path = queue_store().resolve(request.path)
     resolve_media_path(request.path)
 
     if request.render_mode not in {"individual", "reel", "both"}:
@@ -758,6 +751,9 @@ async def save_editor_session(request: EditorSessionRequest) -> dict:
 
 @app.post("/api/clips")
 async def add_clip(request: ClipRequest) -> dict:
+    refresh_queue(request.path)
+    if state["source_path"]:
+        resolve_media_path(state["source_path"])
     if not state["source_path"]:
         raise HTTPException(status_code=400, detail="Select a video first")
 
@@ -769,6 +765,7 @@ async def add_clip(request: ClipRequest) -> dict:
 
     clips.append(
         {
+            "id": uuid.uuid4().hex,
             "name": name,
             "start_s": request.start_s,
             "end_s": request.end_s,
@@ -780,8 +777,12 @@ async def add_clip(request: ClipRequest) -> dict:
 
 
 @app.delete("/api/clips/{index}")
-async def delete_clip(index: int) -> dict:
+async def delete_clip(index: int, path: Optional[str] = None, clip_id: Optional[str] = None) -> dict:
+    refresh_queue(path)
     clips = active_clips()
+
+    if clip_id is not None:
+        index = next((i for i, clip in enumerate(clips) if clip.get("id") == clip_id), -1)
 
     if index < 0 or index >= len(clips):
         raise HTTPException(status_code=404, detail="Clip not found")
@@ -796,7 +797,8 @@ async def delete_clip(index: int) -> dict:
 
 
 @app.delete("/api/clips")
-async def clear_clips() -> dict:
+async def clear_clips(path: Optional[str] = None) -> dict:
+    refresh_queue(path)
     if state["source_path"]:
         state["queues"].pop(state["source_path"], None)
 
@@ -807,6 +809,7 @@ async def clear_clips() -> dict:
 @app.post("/api/render")
 async def start_render(request: RenderRequest) -> dict:
     global render_task
+    refresh_queue(request.path)
 
     if state["source_path"] in deleting_paths:
         raise HTTPException(409, "This video is being deleted")
@@ -822,8 +825,13 @@ async def start_render(request: RenderRequest) -> dict:
 
     if request.mode not in {"individual", "reel", "both"}:
         raise HTTPException(400, "Invalid render mode")
+    lease = render_lease()
+    refresh_queue(request.path)
+    if not active_clips():
+        lease.close()
+        raise HTTPException(400, "These clips were already processed or removed")
     render_task = asyncio.create_task(
-        render_job(
+        shared_render(lease,
             request.mode,
             request.prefix,
             state["source_path"],
@@ -831,6 +839,7 @@ async def start_render(request: RenderRequest) -> dict:
         )
     )
 
+    render_task.add_done_callback(lambda task: lease.close())
     return {"started": True}
 
 
@@ -863,6 +872,7 @@ async def status() -> dict:
         "ffmpeg_available": shutil.which("ffmpeg") is not None,
         "proxy_height": PROXY_HEIGHT,
         "proxy_directory": str(PROXY_ROOT),
+        "queue_file": str(QUEUE_FILE),
         "build": APP_BUILD,
         "cpu_threads": THREADS,
         "active_proxy_processes": len(proxies.processes),

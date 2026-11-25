@@ -8,6 +8,7 @@ let files=[], fail=false, held=false;
 let scan={status:'ready',unavailable:[]};
 const state={clip_counts:{},total_queued_clips:0,source_path:'',current_session:{}};
 const ctx={
+    currentSourcePath: null, queueStateUrl: () => "/api/state", renderClipQueue() {},
     document:{visibilityState:'visible',
         getElementById(id){
             if(!elements.has(id)) elements.set(id,{scrollTop:40,children:[],textContent:'',
