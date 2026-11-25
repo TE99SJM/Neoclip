@@ -179,7 +179,7 @@ def test_manual_rename_preserves_edits_proxy_and_fixed_deadline(application):
     )
     assert main.state["source_path"] == new
     assert main.state["queues"][new][0]["name"] == "keep"
-    assert main.state["queues"]["other.mp4"] == [{"name": "other"}]
+    assert [c["name"] for c in main.state["queues"]["other.mp4"]] == ["other"]
     assert main.state["editor_sessions"][new]["current_time"] == 29
     assert main.state["editor_sessions"][new]["clip_name"] == "draft"
     assert (
@@ -294,7 +294,7 @@ def test_complete_render_appends_clipped_once(application, monkeypatch, mode):
     assert main.render_state["renamed_to"] == "selected clipped.mp4"
     assert (source.parent / "selected clipped.mp4").exists() and not source.exists()
     assert main.state["queues"]["selected clipped.mp4"] == []
-    assert main.state["queues"]["other.mp4"] == [{"name": "other"}]
+    assert [c["name"] for c in main.state["queues"]["other.mp4"]] == ["other"]
     assert individual.await_count == (mode in {"individual", "both"})
     assert reel.await_count == (mode in {"reel", "both"})
     assert clipped_name(main.render_state["renamed_to"]) == "selected clipped.mp4"

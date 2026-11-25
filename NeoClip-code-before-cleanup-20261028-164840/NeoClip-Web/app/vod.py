@@ -311,11 +311,13 @@ class VodProxyManager(ProxyManager):
             raise HTTPException(409, "This video is being renamed")
         if not 0 <= index < math.ceil(job["duration"] / SEGMENT_SECONDS):
             raise HTTPException(404, "Segment not found")
-        source = self.resolve(job["path"])
-        if self.signature(source) != job["signature"]:
-            raise HTTPException(409, "Video changed; select it again")
         target = self.directory(job) / f"segment_{index:05d}.ts"
         if not target.is_file():
+            # Completed segments are immutable local files. Playback of an
+            # already-built proxy must not depend on a responsive NAS share.
+            source = self.resolve(job["path"])
+            if self.signature(source) != job["signature"]:
+                raise HTTPException(409, "Video changed; select it again")
             key = (job["id"], index)
             task = self.tasks.get(key)
             if task is None:

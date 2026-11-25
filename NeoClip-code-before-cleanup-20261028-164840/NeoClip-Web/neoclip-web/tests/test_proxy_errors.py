@@ -2,9 +2,10 @@ import asyncio
 import json
 
 import pytest
+from fastapi import HTTPException
+
 from app import vod
 from app.vod import VodProxyManager
-from fastapi import HTTPException
 
 
 def fake_process(monkeypatch, failure):

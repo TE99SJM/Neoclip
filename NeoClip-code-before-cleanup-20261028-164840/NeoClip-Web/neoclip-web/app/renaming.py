@@ -93,12 +93,14 @@ class MediaRenamer:
         lock,
         busy,
         rendering,
+        move_state=None,
     ):
         self.root, self.state, self.save_state = root, state, save_state
         self.managers = list(dict.fromkeys(managers))
         self.library, self.metadata = library, metadata
         self.lock, self.busy, self.rendering = lock, busy, rendering
         self.journal = data_root / "rename_pending.json"
+        self.move_state = move_state
 
     def _source(self, relative):
         path = self.root / relative
@@ -119,14 +121,17 @@ class MediaRenamer:
             raise VideoChangedError(
                 "Renamed video changed before its saved state was updated"
             )
-        queues, sessions = self.state["queues"], self.state["editor_sessions"]
-        if old in queues:
-            queues.setdefault(new, []).extend(queues.pop(old))
-        if old in sessions:
-            saved = sessions.pop(old)
-            sessions.setdefault(new, saved)
-        if self.state["source_path"] == old:
-            self.state["source_path"] = new
+        if self.move_state:
+            self.move_state(old, new)
+        else:
+            queues, sessions = self.state["queues"], self.state["editor_sessions"]
+            if old in queues:
+                queues.setdefault(new, []).extend(queues.pop(old))
+            if old in sessions:
+                saved = sessions.pop(old)
+                sessions.setdefault(new, saved)
+            if self.state["source_path"] == old:
+                self.state["source_path"] = new
         changed = []
         for manager in self.managers:
             for job_id in record["proxies"].get(str(manager.root), []):

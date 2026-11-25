@@ -3,9 +3,10 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
+
 from app import vod
 from app.vod import VodProxyManager
-from fastapi import HTTPException
 
 
 def manager_job(tmp_path):
