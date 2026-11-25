@@ -21,9 +21,6 @@
 
         html { overscroll-behavior-y: contain; }
 
-        .refresh-handle { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
-        .refresh-handle span { flex: 1; padding: 14px 0; color: #aaa; touch-action: pan-x; user-select: none; -webkit-user-select: none; }
-        .refresh-handle button { flex: 0 0 auto; }
 
         .pull-refresh-status {
             position: fixed;
@@ -206,36 +203,27 @@
             margin-top: 10px;
         }
 
+        .version { margin: 0 0 8px; color: #aaa; font-size: 14px; }
+        #selectedFile:empty { display: none; }
+
         .hidden { display: none; }
 
         @media (max-width: 520px) {
-            h1 { font-size: 24px; }
             video { max-height: 45svh; }
         }
         input, select { min-width: 0; max-width: 100%; }
         button:focus-visible, input:focus-visible { outline: 3px solid #83cfff; outline-offset: 2px; }
         button:disabled { opacity: .55; cursor: not-allowed; }
         .clock { font-variant-numeric: tabular-nums; }
-        .brand { display: flex; gap: 10px; align-items: center; }
-        .brand svg { width: 28px; height: 28px; color: #83cfff; }
     </style>
 </head>
 
 <body>
 <div id="pullRefreshStatus" class="pull-refresh-status hidden" role="status" aria-live="polite"></div>
 <main>
-    <h1 class="brand"><svg viewBox="0 0 32 32" role="img" aria-label="NeoClip logo"><path d="M4 6h9v4H8v12h5v4H4zm24 0h-9v4h5v12h-5v4h9z" fill="currentColor"/><path d="m13 11 8 5-8 5z" fill="currentColor"/></svg>NeoClip 240</h1>
-    <div class="refresh-handle">
-        <span id="pullRefreshHandle">↓ Pull down here to refresh</span>
-        <button id="playerRefreshButton" type="button" onclick="refreshEditor()">Refresh</button>
-    </div>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.1.4-240-test</p>
+    <p class="version">V2.1.4</p>
 
     <section id="playerSection" class="hidden">
-        <p id="selectedFile" class="status"></p>
-        <button id="retryPreviewButton" class="hidden" type="button" onclick="retryPreview()">Retry preview</button>
-
-
         <video id="video"
                controls
                playsinline
@@ -278,6 +266,9 @@
         <button id="playPauseButton" class="field" type="button" onclick="togglePlayback()">Play/Pause</button>
         <button class="field" type="button" onclick="seekSource(0)">Back to start</button>
         <button class="field" id="renameVideoButton" onclick="renameVideo()">Rename video</button>
+
+        <p id="selectedFile" class="status"></p>
+        <button id="retryPreviewButton" class="hidden" type="button" onclick="retryPreview()">Retry preview</button>
 
         <div class="panel">
             <h2>Clip Queue</h2>
@@ -732,7 +723,6 @@
         editorRefreshInFlight = true;
         pullRefreshGesture = null;
         document.getElementById("refreshButton").disabled = true;
-        document.getElementById("playerRefreshButton").disabled = true;
         showRefreshStatus("Refreshing…");
         try {
             // Do not let a stalled session request block recovery of the app.
