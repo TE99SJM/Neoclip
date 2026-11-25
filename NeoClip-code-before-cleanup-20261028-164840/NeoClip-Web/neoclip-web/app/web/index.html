@@ -15,6 +15,7 @@
     <link rel="apple-touch-icon" href="/static/icon-192.png">
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <script src="/static/player-diagnostics.js"></script>
 
     <style>
         * { box-sizing: border-box; }
@@ -247,7 +248,17 @@
             margin-top: 10px;
         }
 
-        .version { margin: 0 0 8px; color: #aaa; font-size: 14px; }
+        .version {
+            margin: 0 0 8px;
+            min-height: 32px;
+            display: flex;
+            align-items: center;
+            color: #aaa;
+            font-size: 14px;
+            touch-action: pan-x;
+            -webkit-user-select: none;
+            user-select: none;
+        }
         #selectedFile:empty { display: none; }
 
         .hidden { display: none; }
@@ -1467,6 +1478,7 @@
     }
 
     startPlaybackWatchdog();
+    window.installNeoClipPlayerDiagnostics?.(video, () => currentProxy?.id);
 
     // Persist the final playhead/mark state during page teardown. The proxy is
     // intentionally left cached for the idle reaper so a short return can

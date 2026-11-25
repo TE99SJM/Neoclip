@@ -22,6 +22,7 @@ from .library import VideoLibrary
 from .library_scan import scan_directory
 from .metadata import VideoMetadata
 from .persistent_proxy import PersistentProxyManager
+from .player_diagnostics import player_diagnostics_router
 from .proxies import THREADS, choose_pipeline, pipeline_args
 from .queue_store import QueueStore
 from .renaming import MediaRenamer, clipped_name
@@ -47,6 +48,7 @@ async def lifespan(app):
 
 app = FastAPI(title="NeoClip 240", lifespan=lifespan)
 APP_BUILD = "2.1.4-240-test"
+app.include_router(player_diagnostics_router(APP_BUILD))
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
