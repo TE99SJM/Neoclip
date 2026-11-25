@@ -250,7 +250,7 @@
         <span id="pullRefreshHandle">↓ Pull down here to refresh</span>
         <button id="playerRefreshButton" type="button" onclick="refreshEditor()">Refresh</button>
     </div>
-    <p class="status">GPU-first editing · Resume-aware previews · v2.1.2-240</p>
+    <p class="status">GPU-first editing · Resume-aware previews · v2.1.3-240-test</p>
 
     <section id="playerSection" class="hidden">
         <p id="selectedFile" class="status"></p>
@@ -398,9 +398,16 @@
     function applyPlaybackSpeed() {
         const status = document.getElementById("speedStatus");
         try {
-            video.defaultPlaybackRate = selectedPlaybackRate;
-            video.playbackRate = selectedPlaybackRate;
-            status.textContent = "";
+            // Safari forwards a playbackRate assignment to its native player
+            // even when the value is unchanged. Repeated metadata events must
+            // not keep sending rate commands during uninterrupted playback.
+            if (video.defaultPlaybackRate !== selectedPlaybackRate) {
+                video.defaultPlaybackRate = selectedPlaybackRate;
+            }
+            if (video.playbackRate !== selectedPlaybackRate) {
+                video.playbackRate = selectedPlaybackRate;
+            }
+            if (status.textContent) status.textContent = "";
         } catch (error) {
             status.textContent = "This browser could not apply that playback speed.";
         }
@@ -412,7 +419,7 @@
         selectedPlaybackRate = rate;
         applyPlaybackSpeed();
     });
-    // Reapply the selected rate when a source or proxy segment is replaced.
+    // Restore the selected speed only if a new attachment actually reset it.
     video.addEventListener("loadedmetadata", applyPlaybackSpeed);
 
 

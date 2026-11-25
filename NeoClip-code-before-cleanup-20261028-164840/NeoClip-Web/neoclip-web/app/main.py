@@ -45,7 +45,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip 240", lifespan=lifespan)
-APP_BUILD = "2.1.2-240"
+APP_BUILD = "2.1.3-240-test"
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
