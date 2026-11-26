@@ -17,7 +17,7 @@ function setup() {
         queuedSeek:null, seekWorkerActive:false, seekIntentActive:false,
         seekIntentTarget:0, seekPlaybackWanted:false, seekRevision:0, sourceSelectionEpoch:0,
         watchdogLastTime:0, watchdogStuckChecks:0,
-        video: {currentTime:40, paused:true, seeking:false, readyState:4,
+        video: {currentTime:40, paused:true, seeking:false, readyState:4, addEventListener(){},
             seekable:{length:0}, async play(){this.paused=false}, pause(){this.paused=true},
             load(){throw Error("video.load must not run during an in-proxy seek")},
             removeAttribute(){throw Error("src must not be removed")}},

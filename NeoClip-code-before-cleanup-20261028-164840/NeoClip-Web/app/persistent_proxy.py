@@ -21,10 +21,11 @@ RETENTION_SECONDS = 14 * 24 * 60 * 60
 
 class PersistentProxyManager(VodProxyManager):
     height = 240
+    cache_name = "240-v1"
 
     def __init__(self, root, resolve, clock=time.time):
         # Do not run the legacy initializer: it purges unfinished/idle jobs.
-        self.root = root / "240-v1"
+        self.root = root / self.cache_name
         self.root.mkdir(parents=True, exist_ok=True)
         self.resolve = resolve
         self.clock = clock

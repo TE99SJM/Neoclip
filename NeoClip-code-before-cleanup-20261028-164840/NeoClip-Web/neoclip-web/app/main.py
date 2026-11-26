@@ -17,11 +17,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .continuous_proxy import ContinuousProxyManager
 from .deletion import VideoChangedError, fingerprint, remove_video
 from .library import VideoLibrary
 from .library_scan import scan_directory
 from .metadata import VideoMetadata
-from .persistent_proxy import PersistentProxyManager
 from .player_diagnostics import player_diagnostics_router
 from .proxies import THREADS, choose_pipeline, pipeline_args
 from .queue_store import QueueStore
@@ -47,7 +47,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip 240", lifespan=lifespan)
-APP_BUILD = "2.1.4-240-test"
+APP_BUILD = "2.1.5-240-test"
 app.include_router(player_diagnostics_router(APP_BUILD))
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
@@ -157,7 +157,7 @@ def resolve_media_path(relative_path: str) -> Path:
 
 
 video_metadata = VideoMetadata(DATA_ROOT / "video_metadata.json", resolve_media_path)
-proxies = PersistentProxyManager(PROXY_ROOT, resolve_media_path)
+proxies = ContinuousProxyManager(PROXY_ROOT, resolve_media_path)
 native_proxies = proxies  # Same durable 240p jobs for Safari and other browsers.
 app.include_router(proxies.router())
 app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
@@ -316,7 +316,7 @@ def media_renamer():
     return MediaRenamer(
         root=MEDIA_ROOT, data_root=DATA_ROOT, state=state, save_state=save_queue,
         move_state=queue_store().rename,
-        managers=[proxies, native_proxies], library=library_index, metadata=video_metadata,
+        managers=[proxies, proxies.legacy], library=library_index, metadata=video_metadata,
         lock=media_change_lock, busy=deleting_paths,
         rendering=lambda path: render_state.get("source_path") == path
         and render_task is not None and not render_task.done(),

@@ -3,6 +3,7 @@ const vm=require('node:vm');
 const assert=require('node:assert/strict');
 const html=readFileSync(`${__dirname}/../app/web/index.html`,'utf8');
 const code=html.slice(html.indexOf('// RECOVERY_CONTROLLER_START'),html.indexOf('    function startPlaybackWatchdog()'));
+const continuous=html.slice(html.indexOf('// CONTINUOUS_WAIT_START'),html.indexOf('// CONTINUOUS_WAIT_END'));
 const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve()};
 function setup({autoplay=false, fail=false}={}) {
  const timers=new Map(),events={},elements=new Map(),calls=[];
@@ -30,7 +31,7 @@ function setup({autoplay=false, fail=false}={}) {
   async setVideoSrc(url){calls.push(url);video.error=null;video.currentTime=0},
   async seekVideoToSavedTime(t,token){assert.equal(token,ctx.proxyWatchToken);calls.push(['seek',t]);video.currentTime=t},
  };
- vm.createContext(ctx);vm.runInContext(code+'\nglobalThis.controller = previewRecovery;',ctx);
+ vm.createContext(ctx);vm.runInContext(continuous+code+'\nglobalThis.controller = previewRecovery;',ctx);
  return {ctx,calls,elements,timers,events,async event(n){for(const f of events[n]||[])f();await flush()},
   async tick(){const first=[...timers].find(([,v])=>v.ms<30000);assert.ok(first);timers.delete(first[0]);first[1].fn();await flush()}};
 }

@@ -132,3 +132,11 @@ Select a video and use **Rename video** to change its filename in the same folde
 
 After all clips in a successful render finish, NeoClip appends ` clipped` before the source extension: `movie.mkv` becomes `movie clipped.mkv`. The suffix is not repeated. Failed/cancelled renders do not mark the source; newly queued clips defer marking until they are processed. If the NAS denies a rename or the destination already exists, the successful exports remain available and the render status explains the filename warning. The 240p cache's retention deadline is unchanged.
 
+
+## 2.1.5 test: continuous 240p preview
+
+`neoclip-240-stable` now holds the promoted 2.1.4 production snapshot. `neoclip-240-test` adds a single continuous encode per preview, removing the per-section decoder resets. The native full-duration timeline remains; playback/seek waits for an unfinished section. Selection still queues a whole-video build without a viewer, and completed proxies retain their fixed 14-day expiry.
+
+Each interrupted build restarts from the beginning with fresh generation URLs; completed runs survive restart. Existing test caches are retained separately until their original expiry or source deletion. They are not reused as continuous streams, so the first selection builds a new preview. The main and test apps continue using the existing shared clip queue and separate proxy/export directories.
+
+See [the spec and review](docs/CONTINUOUS_PROXY_SPEC.md). `scripts/deploy_current_and_continuous.sh <test-commit>` installs the pinned production snapshot on port 8000 before switching the test checkout on port 8001. It stops on an active render or failed version check and leaves existing Compose mounts and queue files in place. This script is specific to Samuel's documented mserver paths.

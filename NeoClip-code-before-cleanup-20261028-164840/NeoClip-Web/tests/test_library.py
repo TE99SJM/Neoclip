@@ -21,7 +21,7 @@ def library(tmp_path, monkeypatch):
     main = importlib.import_module('app.main')
     monkeypatch.setattr(main, 'MEDIA_ROOT', media)
     monkeypatch.setattr(main, 'QUEUE_FILE', tmp_path / 'queue.json')
-    manager = main.PersistentProxyManager(tmp_path / 'proxies', main.resolve_media_path)
+    manager = main.ContinuousProxyManager(tmp_path / 'proxies', main.resolve_media_path)
     monkeypatch.setattr(main, 'proxies', manager)
     monkeypatch.setattr(main, 'native_proxies', manager)
     monkeypatch.setattr(main, 'state', {'source_path': '', 'queues': {}, 'editor_sessions': {}})

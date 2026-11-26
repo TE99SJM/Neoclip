@@ -279,7 +279,7 @@
 <body>
 <div id="pullRefreshStatus" class="pull-refresh-status hidden" role="status" aria-live="polite"></div>
 <main>
-    <p class="version">V2.1.4</p>
+    <p class="version">V2.1.5</p>
 
     <section id="playerSection" class="hidden">
         <div id="videoStage" class="video-stage" aria-busy="false">
@@ -586,6 +586,7 @@
 
     let cancelMediaLoad = null;
     function setVideoSrc(url) {
+        attachedContinuousGeneration = typeof currentProxy === 'undefined' ? null : currentProxy?.generation ?? null;
         if (cancelMediaLoad) cancelMediaLoad();
         destroyHls();
 
@@ -717,7 +718,7 @@
         });
     }
 
-    async function seekVideoToSavedTime(seconds, watchToken = proxyWatchToken) {
+    async function seekVideoToSavedTime(seconds, watchToken = proxyWatchToken, valid = () => true) {
         const requestedTime = Math.max(0, (Number(seconds) || 0) - proxyOffset);
 
         const deadline = Date.now() + 30000;
@@ -725,7 +726,7 @@
 
         while (Date.now() < deadline) {
             if (video.error) throw new Error("Preview data could not be decoded");
-            if (watchToken !== proxyWatchToken) throw new Error("Selection changed");
+            if (watchToken !== proxyWatchToken || !valid()) throw new Error("Selection changed");
             let target = requestedTime;
 
             // Wait until the browser exposes a range that contains the saved
@@ -1388,10 +1389,12 @@
             restoringPlayhead = true;
             if (typeof setPlayerLoading === 'function') setPlayerLoading('recovery', 'Reconnecting preview…');
             try {
-                const status = await api('/api/proxy/start', {
+                let status = await api('/api/proxy/start', {
                     method: 'POST', headers: {'Content-Type': 'application/json'}, timeoutMs: 10000,
                     body: JSON.stringify({path: saved.path, current_time: saved.current_time, native_vod: usesNativeHls()}),
                 });
+                if (!valid()) return;
+                status = await waitForContinuousCoverage(status, saved.current_time, valid);
                 if (!valid()) return;
                 if (!status.playable) throw new Error('Preview is still being prepared');
                 currentProxy = status;
@@ -1781,7 +1784,8 @@
                 );
                 const resumeReady = (
                     pendingResumeSeconds <= 0 ||
-                    status.status === "ready" ||
+                    (!status.continuous && status.status === "ready") ||
+                    (status.continuous && continuousHasTime(status, pendingResumeSeconds)) ||
                     available >= pendingResumeSeconds + switchLead
                 );
 
@@ -2074,7 +2078,84 @@
         }
     }
 
-    async function seekSource(seconds, {autoplay} = {}) {
+    // CONTINUOUS_WAIT_START
+    let continuousSeekRevision = 0;
+    let attachedContinuousGeneration = null;
+
+    function continuousHasTime(status, target) {
+        return !!status.playable && (status.build_status === 'complete' ||
+            Number(status.available_end) > target + .1);
+    }
+
+    async function waitForContinuousCoverage(status, target, valid) {
+        while (status.continuous && !continuousHasTime(status, target)) {
+            if (!valid()) throw new Error('Selection changed');
+            const message = `Building preview to ${formatClock(target)} — ready through ${formatClock(status.available_end || 0)}`;
+            document.getElementById('selectedFile').textContent = message;
+            if (typeof setPlayerLoading === 'function') setPlayerLoading('proxy', message);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            if (!valid()) throw new Error('Selection changed');
+            status = await api(proxyStatusUrl(status), {timeoutMs: 10000});
+        }
+        return status;
+    }
+
+    async function seekSource(seconds, options = {}) {
+        if (!currentProxy?.continuous) return legacySeekSource(seconds, options);
+        if (!activeFile || selectionBusy || deletionBusy) return;
+        const revision = ++continuousSeekRevision;
+        const token = proxyWatchToken;
+        const path = activeFile.path;
+        const valid = () => revision === continuousSeekRevision && token === proxyWatchToken && activeFile?.path === path;
+        const target = Math.min(Math.max(Number(seconds) || 0, 0), Math.max(0, sourceDuration - .2));
+        const autoplay = options.autoplay ?? userWantsPlayback;
+        previewRecovery.cancel();
+        playbackEnded = false;
+        updatePlaybackButton();
+        pendingResumeSeconds = target;
+        restoringPlayhead = true;
+        if (typeof seekIntentActive !== 'undefined') { seekIntentActive = true; seekIntentTarget = target; }
+        try {
+            if (!continuousHasTime(currentProxy, target)) {
+                video.pause();
+                if (typeof hls !== 'undefined' && hls) hls.stopLoad();
+            }
+            const status = await waitForContinuousCoverage(currentProxy, target, valid);
+            if (!valid()) return;
+            currentProxy = status;
+            if (video.error || attachedContinuousGeneration !== status.generation) {
+                await setVideoSrc(status.url);
+                if (!valid()) return;
+            }
+            await seekVideoToSavedTime(target, token, valid);
+            if (!valid()) return;
+            if (autoplay) {
+                try { await video.play(); } catch (error) {
+                    if (error.name !== 'NotAllowedError') throw error;
+                }
+            } else video.pause();
+        } catch (error) {
+            if (valid()) document.getElementById('selectedFile').textContent = error.message;
+        } finally {
+            if (valid()) {
+                restoringPlayhead = false;
+                if (typeof seekIntentActive !== 'undefined') seekIntentActive = false;
+                if (typeof clearPlayerLoading === 'function') clearPlayerLoading('proxy');
+                scheduleEditorSessionSave(true);
+            }
+        }
+    }
+
+    video.addEventListener('seeking', () => {
+        if (currentProxy?.continuous && !restoringPlayhead && currentlyUsingProxy &&
+                !continuousHasTime(currentProxy, video.currentTime + proxyOffset)) {
+            void seekSource(video.currentTime + proxyOffset);
+        }
+    });
+    // CONTINUOUS_WAIT_END
+
+
+    async function legacySeekSource(seconds, {autoplay} = {}) {
         if (video.error || previewRecovery.pending()) {
             if (previewRecovery.busy()) return;
             playbackEnded = false;

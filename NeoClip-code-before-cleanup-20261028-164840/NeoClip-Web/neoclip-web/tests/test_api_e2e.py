@@ -80,10 +80,10 @@ def test_real_ffmpeg_resume_and_exports(tmp_path, monkeypatch):
         text = client.get(job["url"]).text
         assert f"id={job['id']}" in text
         assert "TIME-OFFSET=6" in text
-        segment = client.get(f"/api/vod/segment/segment_00000.ts?id={job['id']}")
+        segment = client.get(f"/api/vod/segment/segment_00000.ts?id={job['id']}&generation={job['generation']}")
         assert segment.status_code == 200 and len(segment.content) > 1000
         assert (
-            client.get(f"/api/vod/segment/job.json?id={job['id']}").status_code == 400
+            client.get(f"/api/vod/segment/job.json?id={job['id']}&generation={job['generation']}").status_code == 400
         )
         same = client.post(
             "/api/proxy/start", json={"path": "sample.mp4", "current_time": 8}
@@ -105,7 +105,7 @@ def test_real_ffmpeg_resume_and_exports(tmp_path, monkeypatch):
         assert earlier["status"] == "ready"
         assert "#EXT-X-ENDLIST" in client.get(earlier["url"]).text
         # The generated stream includes the first second, not an end-only window.
-        segment_path = main.proxies.directory(earlier) / "segment_00000.ts"
+        segment_path = main.proxies.generation_dir(earlier) / "segment_00000.ts"
         timing = json.loads(subprocess.check_output([
             "ffprobe", "-v", "error", "-select_streams", "v:0",
             "-show_entries", "stream=start_time", "-of", "json", str(segment_path),

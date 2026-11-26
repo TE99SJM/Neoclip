@@ -436,20 +436,19 @@ def test_unfinished_240_proxy_continues_under_new_name(application, monkeypatch)
         started = asyncio.Event()
         calls = []
 
-        async def encode(job, index, target):
-            try:
-                calls.append((job["path"], index))
-                if job["path"] == "selected.mp4":
-                    started.set()
-                    await asyncio.Event().wait()
-                target.write_bytes(b"new cached frames")
-                manager.built[job["id"]].add(index)
-                manager._completed(job)
-                manager.save(job)
-            finally:
-                manager.tasks.pop((job["id"], index), None)
+        async def encode(job, src, directory):
+            calls.append(job['path'])
+            if job['path'] == 'selected.mp4':
+                started.set()
+                await asyncio.Event().wait()
+            lines = ['#EXTM3U']
+            for index in range(3):
+                (directory / f'segment_{index:05d}.ts').write_bytes(b'new cached frames')
+                lines += [f'#EXTINF:{6 if index < 2 else 1},', f'segment_{index:05d}.ts']
+            (directory / 'encoder.m3u8').write_text('\n'.join(lines)+'\n')
+            manager._published(job)
 
-        monkeypatch.setattr(manager, "encode_segment", encode)
+        monkeypatch.setattr(manager, "_encode", encode)
         manager.start_background()
         try:
             await asyncio.wait_for(started.wait(), 3)
@@ -459,7 +458,8 @@ def test_unfinished_240_proxy_continues_under_new_name(application, monkeypatch)
                 while job["build_status"] != "complete":
                     await asyncio.sleep(0.01)
             assert job["id"] == "a" * 32 and job["path"] == "new.mp4"
-            assert ("new.mp4", 1) in calls and ("new.mp4", 2) in calls
+            assert calls == ['selected.mp4', 'new.mp4']
+            assert len(list(manager.generation_dir(job).glob('*.ts'))) == 3
             assert (
                 manager.directory(job) / "segment_00000.ts"
             ).read_bytes() == b"cached frames"
