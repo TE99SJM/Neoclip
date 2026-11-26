@@ -1,6 +1,6 @@
 
 <!doctype html>
-<html lang="en">
+<html lang="en" data-test-diagnostics="false">
 <head>
     <meta charset="utf-8">
     <meta name="viewport"
@@ -16,6 +16,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.4/dist/hls.min.js"></script>
     <script src="/static/player-diagnostics.js"></script>
+    <!-- test-gui-diagnostics -->
 
     <style>
         * { box-sizing: border-box; }
@@ -226,13 +227,33 @@
         button:focus-visible, input:focus-visible { outline: 3px solid #83cfff; outline-offset: 2px; }
         button:disabled { opacity: .55; cursor: not-allowed; }
         .clock { font-variant-numeric: tabular-nums; }
+
+        .test-diagnostics {
+            margin: 0 0 12px; padding: 10px; border: 1px solid #536b7e;
+            border-radius: 10px; background: #18222c; color: #e8f3ff;
+            font-size: 13px; line-height: 1.4;
+        }
+        .test-diagnostic-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+        .test-diagnostic-badges span {
+            background: #263a4c; border-radius: 6px; padding: 4px 7px;
+            max-width: 100%; overflow-wrap: anywhere;
+        }
+        .test-diagnostic-badges [data-error="true"] { background: #7a2424; }
+        .test-diagnostics summary { cursor: pointer; padding: 4px 0; }
+        .test-diagnostics textarea {
+            display: block; width: 100%; margin: 8px 0; padding: 8px;
+            background: #0d151d; color: #e8f3ff; border: 1px solid #536b7e;
+            font: 12px/1.5 monospace; resize: vertical;
+        }
+        .test-diagnostic-actions { display: flex; gap: 8px; margin-bottom: 6px; }
+        .test-diagnostic-actions button { width: auto; flex: 1; min-height: 36px; font-size: 14px; }
     </style>
 </head>
 
 <body>
 <div id="pullRefreshStatus" class="pull-refresh-status hidden" role="status" aria-live="polite"></div>
 <main>
-    <p class="version">V2.2.0-playback.2</p>
+    <p class="version">V2.2.0-playback.3</p>
 
     <section id="playerSection" class="hidden">
         <video id="video"
@@ -2289,6 +2310,11 @@
         pollRender();
     }
 
+    try {
+        window.installNeoClipTestDiagnostics?.({video, getProxy: () => currentProxy});
+    } catch (error) {
+        console.warn('Test diagnostics could not start:', error);
+    }
     initializeEditor();
 </script>
 </body>

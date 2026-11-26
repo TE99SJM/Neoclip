@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from .continuous_proxy import ContinuousProxyManager
 from .deletion import VideoChangedError, fingerprint, remove_video
+from .gui_diagnostics import configure_gui_diagnostics, gui_diagnostics_enabled
 from .library import VideoLibrary
 from .library_scan import scan_directory
 from .metadata import VideoMetadata
@@ -47,7 +48,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip 240", lifespan=lifespan)
-APP_BUILD = "2.2.0-playback.2"
+APP_BUILD = "2.2.0-playback.3"
 app.include_router(player_diagnostics_router(APP_BUILD))
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
@@ -661,7 +662,8 @@ async def render_job(
 @app.get("/", response_class=HTMLResponse)
 async def home() -> HTMLResponse:
     return HTMLResponse(
-        (WEB_ROOT / "index.html").read_text(), headers={"Cache-Control": "no-store"}
+        configure_gui_diagnostics((WEB_ROOT / "index.html").read_text()),
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -671,7 +673,7 @@ async def get_files(details: bool = False) -> JSONResponse:
     listing = library_index.snapshot()
     listing["files"] = video_metadata.enrich(listing["files"], MEDIA_ROOT)
     return JSONResponse(
-        listing if details else listing["files"], headers={"Cache-Control": "no-store"}
+        listing if details else listing["files"], headers={"Cache-Control": "no-store"},
     )
 
 
@@ -930,6 +932,7 @@ async def get_render_status() -> dict:
 async def status() -> dict:
     return {
         "status": "online",
+        "test_diagnostics": gui_diagnostics_enabled(),
         "media_available": MEDIA_ROOT.exists(),
         "export_available": EXPORT_ROOT.exists(),
         "ffmpeg_available": shutil.which("ffmpeg") is not None,
