@@ -15,7 +15,14 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 
-from .proxies import THREADS, ProxyManager, choose_pipeline, pipeline_args
+from .proxies import (
+    PIPELINES,
+    REQUIRE_GPU,
+    THREADS,
+    ProxyManager,
+    choose_pipeline,
+    pipeline_args,
+)
 
 log = logging.getLogger(__name__)
 SEGMENT_SECONDS = 6
@@ -124,6 +131,9 @@ class VodProxyManager(ProxyManager):
             "-y",
             "-loglevel",
             "error",
+            "-progress",
+            "pipe:1",
+            "-nostats",
             "-filter_threads",
             str(THREADS),
             "-ss",
@@ -155,58 +165,131 @@ class VodProxyManager(ProxyManager):
             str(target),
         ]
 
+    @staticmethod
+    def fallback_mode(mode, detail):
+        # Storage/read errors and timeouts need a different remedy. Do not
+        # multiply work or bypass an explicitly configured GPU-only policy.
+        gpu_error = any(
+            marker in detail.lower()
+            for marker in (
+                "hw_frames_ctx must be set",
+                "cannot load libcuda",
+                "cannot load libnvidia",
+                "no capable devices",
+                "openencodesessionex failed",
+                "cuda_error",
+                "error while opening encoder",
+                "failed to initialise nvenc",
+            )
+        )
+        if (
+            REQUIRE_GPU
+            or not gpu_error
+            or any(
+                marker in detail.lower()
+                for marker in (
+                    "no space left",
+                    "permission denied",
+                    "input/output error",
+                    "resource temporarily unavailable",
+                )
+            )
+        ):
+            return None
+        return {"cuda": "nvenc", "upload": "nvenc", "nvenc": "cpu"}.get(mode)
+
+    @staticmethod
+    def record_failure(job, index, mode, detail):
+        job.update(
+            error=detail,
+            message="Preview section failed; retry playback",
+            last_failure={
+                "segment": index,
+                "start_seconds": index * SEGMENT_SECONDS,
+                "mode": mode,
+                "message": detail,
+                "occurred_at": time.time(),
+            },
+        )
+        log.warning(
+            "Proxy segment failed: path=%s segment=%s time=%ss mode=%s: %s",
+            job["path"],
+            index,
+            index * SEGMENT_SECONDS,
+            mode,
+            detail,
+        )
+
     async def encode_segment(self, job, index, target):
         temporary = target.with_suffix(".tmp")
         process = None
+        mode = job["mode"]
         key = (job["id"], index)
         try:
             async with self.workers:
                 source = self.resolve(job["path"])
                 if self.signature(source) != job["signature"]:
                     raise HTTPException(409, "Video changed; select it again")
-                process = await asyncio.create_subprocess_exec(
-                    *self.segment_command(job, source, index, temporary),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                self.processes[key] = process
-                _, error = await asyncio.wait_for(process.communicate(), 45)
-                if (
-                    process.returncode
-                    or not temporary.exists()
-                    or not temporary.stat().st_size
-                ):
-                    raise RuntimeError(error.decode(errors="replace")[-1000:])
+                mode = job["mode"]
+                while True:
+                    # Each subprocess gets an immutable mode even when another
+                    # segment discovers a fallback for the same job concurrently.
+                    process = await asyncio.create_subprocess_exec(
+                        *self.segment_command(
+                            {**job, "mode": mode}, source, index, temporary
+                        ),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    self.processes[key] = process
+                    progress, error = await asyncio.wait_for(process.communicate(), 45)
+                    detail = error.decode(errors="replace")[-3000:]
+                    if process.returncode:
+                        fallback = self.fallback_mode(mode, detail)
+                        if fallback is None:
+                            raise RuntimeError(detail)
+                        self.record_failure(job, index, mode, detail)
+                        log.warning(
+                            "Proxy fallback: path=%s segment=%s %s -> %s",
+                            job["path"],
+                            index,
+                            mode,
+                            fallback,
+                        )
+                        temporary.unlink(missing_ok=True)
+                        mode = fallback
+                        continue
+                    frames = re.findall(rb"^frame=(\d+)", progress, re.M)
+                    if not frames or int(frames[-1]) == 0:
+                        raise RuntimeError(
+                            f"No video frames decoded at {index * SEGMENT_SECONDS}s; "
+                            "the source may end before its reported duration. " + detail
+                        )
+                    if not temporary.exists() or not temporary.stat().st_size:
+                        raise RuntimeError(detail or "FFmpeg produced no preview data")
+                    break
                 # Source replacement while encoding must not poison the cache.
                 if self.signature(source) != job["signature"]:
                     raise HTTPException(409, "Video changed; select it again")
                 temporary.replace(target)
                 job.update(error="", message="On-demand preview ready")
+                modes = [name for name, _ in PIPELINES]
+                # A concurrently successful GPU request must not undo a safer
+                # pipeline already selected by another segment.
+                if modes.index(mode) > modes.index(job["mode"]):
+                    job.update(
+                        mode=mode,
+                        pipeline=dict(PIPELINES)[mode],
+                        fallback_reason=job.get("last_failure", {}).get("message", ""),
+                    )
+                    self.save(job)
         except (RuntimeError, asyncio.TimeoutError, OSError) as exc:
             detail = (
                 "FFmpeg timed out after 45 seconds"
                 if isinstance(exc, asyncio.TimeoutError)
                 else str(exc).strip() or "FFmpeg produced no preview data"
             )
-            job.update(
-                error=detail,
-                message="Preview section failed; retry playback",
-                last_failure={
-                    "segment": index,
-                    "start_seconds": index * SEGMENT_SECONDS,
-                    "mode": job["mode"],
-                    "message": detail,
-                    "occurred_at": time.time(),
-                },
-            )
-            log.warning(
-                "Proxy segment failed: path=%s segment=%s time=%ss mode=%s: %s",
-                job["path"],
-                index,
-                index * SEGMENT_SECONDS,
-                job["mode"],
-                detail,
-            )
+            self.record_failure(job, index, mode, detail)
             raise HTTPException(
                 503,
                 "Cannot prepare preview section; retry playback",
@@ -224,13 +307,17 @@ class VodProxyManager(ProxyManager):
             self.tasks.pop(key, None)
 
     async def segment(self, job, index):
+        if job["path"] in getattr(self, "renaming_paths", ()):
+            raise HTTPException(409, "This video is being renamed")
         if not 0 <= index < math.ceil(job["duration"] / SEGMENT_SECONDS):
             raise HTTPException(404, "Segment not found")
-        source = self.resolve(job["path"])
-        if self.signature(source) != job["signature"]:
-            raise HTTPException(409, "Video changed; select it again")
         target = self.directory(job) / f"segment_{index:05d}.ts"
         if not target.is_file():
+            # Completed segments are immutable local files. Playback of an
+            # already-built proxy must not depend on a responsive NAS share.
+            source = self.resolve(job["path"])
+            if self.signature(source) != job["signature"]:
+                raise HTTPException(409, "Video changed; select it again")
             key = (job["id"], index)
             task = self.tasks.get(key)
             if task is None:

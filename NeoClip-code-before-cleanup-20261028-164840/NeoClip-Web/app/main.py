@@ -1,5 +1,6 @@
 import asyncio
 import errno
+import logging
 import math
 import os
 import re
@@ -21,12 +22,18 @@ from .library import VideoLibrary
 from .library_scan import scan_directory
 from .metadata import VideoMetadata
 from .persistent_proxy import PersistentProxyManager
+from .player_diagnostics import player_diagnostics_router
 from .proxies import THREADS, choose_pipeline, pipeline_args
 from .queue_store import QueueStore
+from .renaming import MediaRenamer, clipped_name
 
 
 @asynccontextmanager
 async def lifespan(app):
+    try:
+        await asyncio.to_thread(media_renamer().recover)
+    except Exception:
+        logging.getLogger(__name__).exception("Could not complete a pending file rename")
     library_index.start()
     proxies.reaper = asyncio.create_task(proxies.reap())
     proxies.start_background()
@@ -40,7 +47,8 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip 240", lifespan=lifespan)
-APP_BUILD = "2.1.0-240-shared"
+APP_BUILD = "2.1.4-240"
+app.include_router(player_diagnostics_router(APP_BUILD))
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
     app.add_middleware(
@@ -70,6 +78,11 @@ class SourceRequest(BaseModel):
     path: str
     native_vod: bool = False
     current_time: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class RenameRequest(BaseModel):
+    path: str
+    name: str
 
 
 class ClipRequest(BaseModel):
@@ -289,7 +302,32 @@ load_queue()
 
 
 library_index = VideoLibrary(MEDIA_ROOT, DATA_ROOT / "video_library.json")
-library_index.on_remove = proxies.delete_path
+
+
+async def remove_missing_proxy(path):
+    if path not in deleting_paths:
+        await proxies.delete_path(path)
+
+
+library_index.on_remove = remove_missing_proxy
+
+
+def media_renamer():
+    return MediaRenamer(
+        root=MEDIA_ROOT, data_root=DATA_ROOT, state=state, save_state=save_queue,
+        move_state=queue_store().rename,
+        managers=[proxies, native_proxies], library=library_index, metadata=video_metadata,
+        lock=media_change_lock, busy=deleting_paths,
+        rendering=lambda path: render_state.get("source_path") == path
+        and render_task is not None and not render_task.done(),
+    )
+
+
+@app.post("/api/media/rename")
+async def rename_media(request: RenameRequest):
+    refresh_queue()
+    with render_lease():
+        return await media_renamer().rename(queue_store().resolve(request.path), request.name)
 
 
 def list_videos() -> list[dict]:
@@ -522,9 +560,11 @@ async def render_job(
             current_file="",
             error="",
             source_path=rendered_source,
+            renamed_from="", renamed_to="", rename_warning="",
         )
 
         source = resolve_media_path(rendered_source)
+        rendered_fingerprint = await asyncio.to_thread(fingerprint, source)
         prefix = sanitize_filename(prefix)
         source_has_audio = (await proxies.probe(source))[1]
         video_encoder, label, failures = await choose_pipeline(
@@ -571,13 +611,8 @@ async def render_job(
             )
             await run_with(video_encoder)
 
-        render_state.update(
-            status="done",
-            progress=100,
-            message="Render complete",
-            current_file="",
-            error="",
-        )
+        render_state.update(status="finalizing", progress=99,
+                            message="Finishing render and updating filename", current_file="")
 
         # Remove only the rendered snapshot, not newly queued clips or a
         # different video's queue selected while this job was running.
@@ -587,6 +622,24 @@ async def render_job(
             if clip in remaining:
                 remaining.remove(clip)
         save_queue()
+        warning = ""
+        if not state["queues"].get(rendered_source):
+            try:
+                renamed = await media_renamer().rename(
+                    rendered_source, clipped_name(rendered_source),
+                    after_render=True, expected=rendered_fingerprint,
+                )
+                warning = renamed.get("warning", "")
+                if renamed["path"] != rendered_source:
+                    render_state.update(renamed_from=rendered_source, renamed_to=renamed["path"],
+                                        source_path=renamed["path"])
+            except Exception as exc:
+                # The exports succeeded. A name conflict/NAS permission error
+                # must not misreport that success or cause duplicate rendering.
+                warning = "Clips saved, but the source filename was not updated: " + str(getattr(exc, "detail", exc))
+        render_state.update(status="done", progress=100, current_file="", error="",
+                            rename_warning=warning,
+                            message="Render complete" + (" — " + warning if warning else ""))
 
     except asyncio.CancelledError:
         render_state.update(
@@ -729,6 +782,8 @@ async def get_state(path: Optional[str] = None) -> dict:
 async def save_editor_session(request: EditorSessionRequest) -> dict:
     refresh_queue()
     request.path = queue_store().resolve(request.path)
+    if request.path in deleting_paths:
+        raise HTTPException(409, "This video is being changed")
     resolve_media_path(request.path)
 
     if request.render_mode not in {"individual", "reel", "both"}:
@@ -754,6 +809,8 @@ async def add_clip(request: ClipRequest) -> dict:
     refresh_queue(request.path)
     if state["source_path"]:
         resolve_media_path(state["source_path"])
+    if state["source_path"] in deleting_paths:
+        raise HTTPException(409, "This video is being changed")
     if not state["source_path"]:
         raise HTTPException(status_code=400, detail="Select a video first")
 
@@ -779,6 +836,8 @@ async def add_clip(request: ClipRequest) -> dict:
 @app.delete("/api/clips/{index}")
 async def delete_clip(index: int, path: Optional[str] = None, clip_id: Optional[str] = None) -> dict:
     refresh_queue(path)
+    if state["source_path"] in deleting_paths:
+        raise HTTPException(409, "This video is being changed")
     clips = active_clips()
 
     if clip_id is not None:
@@ -799,6 +858,8 @@ async def delete_clip(index: int, path: Optional[str] = None, clip_id: Optional[
 @app.delete("/api/clips")
 async def clear_clips(path: Optional[str] = None) -> dict:
     refresh_queue(path)
+    if state["source_path"] in deleting_paths:
+        raise HTTPException(409, "This video is being changed")
     if state["source_path"]:
         state["queues"].pop(state["source_path"], None)
 
@@ -845,6 +906,8 @@ async def start_render(request: RenderRequest) -> dict:
 
 @app.post("/api/render/cancel")
 async def cancel_render() -> dict:
+    if render_state.get("status") == "finalizing":
+        return {"cancelled": False, "message": "Clips are saved; finishing filename update"}
     if render_process and render_process.returncode is None:
         try:
             render_process.kill()

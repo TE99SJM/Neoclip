@@ -13,6 +13,7 @@ function setup(save = async () => {}) {
         document: {
             documentElement: {scrollTop:0}, body: {scrollTop:0}, fullscreenElement:null,
             getElementById(id) {
+                if (!html.includes(`id="${id}"`)) return null;
                 if (!elements.has(id)) elements.set(id, {textContent:'', disabled:false,
                     classList: {toggle() {}}});
                 return elements.get(id);
@@ -43,6 +44,8 @@ function setup(save = async () => {}) {
 }
 const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve()};
 (async()=>{
+    assert.match(html, /\.version\s*\{[^}]*touch-action:\s*pan-x/);
+    assert.doesNotMatch(html, /id="playerRefreshButton"|id="pullRefreshHandle"/);
     const s=setup();
     s.start();s.move(20,60);s.events.touchend();await flush();
     assert.equal(s.reloads,0,'short pull does not refresh');
@@ -82,3 +85,4 @@ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve()};
     assert.match(html, /id="refreshButton"[^>]*onclick="refreshEditor\(\)"/);
     console.log('Pull-down gestures, cancellation, controls, saved session, timeout fallback and manual refresh passed');
 })().catch(error=>{console.error(error);process.exitCode=1});
+

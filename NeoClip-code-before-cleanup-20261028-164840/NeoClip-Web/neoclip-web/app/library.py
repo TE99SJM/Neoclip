@@ -7,6 +7,7 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+from urllib.parse import quote
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class VideoLibrary:
         self.files = {}
         self.on_remove = None
         self.removed = set()
+        self.added = set()
         self.save_lock = asyncio.Lock()
         self.task = None
         self.process = None
@@ -123,6 +125,7 @@ class VideoLibrary:
                 return
             self.process = None
         self.removed.clear()
+        self.added.clear()
         self.status = "scanning"
         self.unavailable = []
         seen = set()
@@ -139,9 +142,9 @@ class VideoLibrary:
             return any(prefix == "." or path == prefix or path.startswith(prefix + "/")
                        for prefix in self.unavailable)
 
-        missing = [path for path in self.files if path not in seen and not failed(path)]
+        missing = [path for path in self.files if path not in seen and path not in self.added and not failed(path)]
         self.files = {path: item for path, item in self.files.items()
-                      if path in seen or failed(path)}
+                      if path in seen or path in self.added or failed(path)}
         if self.on_remove:
             for path in missing:
                 await self.on_remove(path)
@@ -149,6 +152,16 @@ class VideoLibrary:
         self.status = ("partial" if self.files else "unavailable") if self.unavailable else "ready"
         self.location = ""
         await self.save()
+
+    def rename_entry(self, old, new, info):
+        self.removed.add(old)
+        self.files.pop(old, None)
+        self.added.add(new)
+        self.files[new] = {
+            "name": Path(new).name, "path": new,
+            "original_url": f"/api/media?path={quote(new)}",
+            "size_bytes": info.st_size, "modified_ns": str(info.st_mtime_ns),
+        }
 
     async def forget(self, path):
         # Ignore old records already buffered by the current scanner. The next
