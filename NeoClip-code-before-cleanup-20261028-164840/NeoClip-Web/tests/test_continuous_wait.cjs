@@ -51,3 +51,21 @@ function setup() {
  assert.deepEqual(legacy.calls,['legacy']);
  console.log('Continuous preview: wait without reload, native seeks, cancellation, generation recovery and paused intent passed');
 })().catch(e=>{console.error(e);process.exitCode=1});
+
+// A second native slider gesture supersedes an outstanding missing-section wait.
+(async()=>{
+ const next=setup();Object.assign(next.ctx.currentProxy,{build_status:'building',playable:true,available_end:36});
+ let release;
+ next.ctx.api=()=>new Promise(resolve=>{release=resolve});
+ next.ctx.video.currentTime=90;next.events.seeking();
+ for(let i=0;i<10;i++)await Promise.resolve();
+ assert.equal(next.ctx.pendingResumeSeconds,90);
+ next.ctx.video.currentTime=2;next.events.seeking();
+ for(let i=0;i<20;i++)await Promise.resolve();
+ assert.ok(next.calls.some(c=>Array.isArray(c)&&c[1]===2));
+ release({...next.ctx.currentProxy,build_status:'complete',available_end:180});
+ for(let i=0;i<20;i++)await Promise.resolve();
+ assert.equal(next.calls.some(c=>Array.isArray(c)&&c[1]===90),false);
+ assert.equal(next.ctx.pendingResumeSeconds,2);
+ console.log('Native slider: a later cached seek cancels the earlier build wait');
+})().catch(e=>{console.error(e);process.exitCode=1});

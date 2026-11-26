@@ -14,7 +14,7 @@
     <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="/static/icon-192.png">
 
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.4/dist/hls.min.js"></script>
     <script src="/static/player-diagnostics.js"></script>
 
     <style>
@@ -279,7 +279,7 @@
 <body>
 <div id="pullRefreshStatus" class="pull-refresh-status hidden" role="status" aria-live="polite"></div>
 <main>
-    <p class="version">V2.2.0-playback.1</p>
+    <p class="version">V2.2.0-playback.2</p>
 
     <section id="playerSection" class="hidden">
         <div id="videoStage" class="video-stage" aria-busy="false">
@@ -457,6 +457,17 @@
     });
     // Restore the selected speed only if a new attachment actually reset it.
     video.addEventListener("loadedmetadata", applyPlaybackSpeed);
+    video.addEventListener("ratechange", () => {
+        // Adopt native-menu choices so later metadata events cannot undo them.
+        // Ignore attachment resets; loadedmetadata restores the saved choice.
+        const rate = Number(video.playbackRate);
+        if (video.readyState < 2 || video.error || !Number.isFinite(rate) || rate <= 0 ||
+                (typeof restoringPlayhead !== 'undefined' && restoringPlayhead)) return;
+        selectedPlaybackRate = rate;
+        const option = Array.from(playbackSpeed.options).find(item => Number(item.value) === rate);
+        if (option) playbackSpeed.value = option.value;
+        if (video.defaultPlaybackRate !== rate) video.defaultPlaybackRate = rate;
+    });
 
 
     // Browser-owned video controls do not reliably expose a loading spinner.
@@ -563,7 +574,10 @@
             (status.error ? ` Retrying: ${status.error}` : "");
     }
 
+    let releaseFiniteTimeline = null;
     function destroyHls() {
+        if (releaseFiniteTimeline) releaseFiniteTimeline();
+        releaseFiniteTimeline = null;
         if (hls) {
             try { hls.destroy(); } catch (_) {}
             hls = null;
@@ -580,6 +594,65 @@
         return !!(appleBrowser && video.canPlayType("application/vnd.apple.mpegurl"));
     }
 
+    function canUseFiniteProxyTimeline() {
+        // hls.js uses MediaSource, or ManagedMediaSource on recent iPhones.
+        // A finite duration keeps the browser's timeline and speed controls.
+        return !!(window.Hls && Hls.isSupported());
+    }
+
+    function attachFiniteProxyTimeline(engine, url, duration) {
+        const overrides = {duration};
+        const remoteDisabled = video.disableRemotePlayback;
+        let alternative = null;
+        let disposed = false;
+        engine.on(Hls.Events.MEDIA_ATTACHED, () => {
+            if (disposed) return;
+            // MMS needs either an AirPlay alternative or disabled remote
+            // playback. Keep an alternative so AirPlay stays available.
+            if (video.querySelector('source')) {
+                alternative?.remove();
+                alternative = document.createElement('source');
+                alternative.type = 'application/vnd.apple.mpegurl';
+                alternative.src = url;
+                video.appendChild(alternative);
+                video.disableRemotePlayback = remoteDisabled;
+            }
+        });
+        engine.on(Hls.Events.LEVEL_UPDATED, (_event, data) => {
+            if (disposed) return;
+            const edge = Number(data.details?.edge);
+            if (Number.isFinite(edge) && edge > 0) {
+                // The completed playlist supplies the exact encoded duration.
+                // Mutate the attachment's override; do not reload the source.
+                overrides.duration = data.details.live ? Math.max(duration, edge) : edge;
+            }
+        });
+        let resumeAfterAirPlay = null;
+        const returnFromAirPlay = () => {
+            if (disposed || video.webkitCurrentPlaybackTargetIsWireless || engine.media === video) return;
+            const at = Math.max(0, Number(video.currentTime) || 0);
+            const playing = !video.paused;
+            if (resumeAfterAirPlay) video.removeEventListener('canplay', resumeAfterAirPlay);
+            resumeAfterAirPlay = () => {
+                if (!disposed && playing) video.play().catch(() => {});
+                resumeAfterAirPlay = null;
+            };
+            video.addEventListener('canplay', resumeAfterAirPlay, {once: true});
+            engine.attachMedia({media: video, overrides});
+            engine.startLoad(at);
+        };
+        video.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', returnFromAirPlay);
+        releaseFiniteTimeline = () => {
+            disposed = true;
+            video.removeEventListener('webkitcurrentplaybacktargetiswirelesschanged', returnFromAirPlay);
+            if (resumeAfterAirPlay) video.removeEventListener('canplay', resumeAfterAirPlay);
+            alternative?.remove();
+            video.disableRemotePlayback = remoteDisabled;
+        };
+        engine.attachMedia({media: video, overrides});
+        return overrides;
+    }
+
     function proxyStatusUrl(status) {
         return status.status_url || `/api/proxy/status?id=${status.id}`;
     }
@@ -592,6 +665,14 @@
 
         const isHls = url.includes("/api/proxy/playlist") || url.includes(".m3u8");
         const preferNative = usesNativeHls();
+        const proxy = typeof currentProxy === 'undefined' ? null : currentProxy;
+        const duration = Number(proxy?.duration);
+        const growingProxy = !!(isHls && proxy?.continuous && url.includes('growing=true'));
+        const finiteProxy = growingProxy && Number.isFinite(duration) && duration > 0 &&
+            canUseFiniteProxyTimeline();
+        if (growingProxy && preferNative && !finiteProxy) {
+            return Promise.reject(new Error('Waiting for the completed proxy for native controls'));
+        }
 
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(
@@ -613,14 +694,16 @@
             video.addEventListener("loadedmetadata", onReady);
             video.addEventListener("error", onError);
 
-            // Prefer native HLS on Safari/iOS for system playback and PiP.
-            if (isHls && !preferNative
+            // Keep native controls; growing proxies need a finite MediaSource timeline.
+            if (isHls && (!preferNative || finiteProxy)
                     && window.Hls && Hls.isSupported()) {
                 hls = new Hls({
                     // This is an event/VOD-style proxy, not a true low-latency
                     // live stream. Normal buffering is more stable and avoids
                     // unnecessary stalls on phones and slower Wi-Fi links.
                     lowLatencyMode: false,
+                    liveDurationInfinity: false,
+                    preferManagedMediaSource: finiteProxy && preferNative,
                     startPosition: Math.max(0, pendingResumeSeconds - proxyOffset),
                     liveSyncDuration: 86400,
                     maxLiveSyncPlaybackRate: 1,
@@ -635,7 +718,9 @@
                 });
 
                 hls.loadSource(url);
-                hls.attachMedia(video);
+                const timelineOverrides = finiteProxy
+                    ? attachFiniteProxyTimeline(hls, url, duration) : null;
+                if (!finiteProxy) hls.attachMedia(video);
 
                 hls.on(Hls.Events.MANIFEST_PARSED, () => {
                     // The manifest can be parsed before the media element has
@@ -663,7 +748,12 @@
 
                     if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
                         try {
-                            hls.recoverMediaError();
+                            if (timelineOverrides) {
+                                const at = Math.max(0, Number(video.currentTime) || 0);
+                                hls.detachMedia();
+                                hls.attachMedia({media: video, overrides: timelineOverrides});
+                                hls.startLoad(at);
+                            } else hls.recoverMediaError();
                             return;
                         } catch (_) {}
                     }
@@ -2098,6 +2188,9 @@
     function continuousHasTime(status, target) {
         // EVENT lists only finished sections. Keep three sections of lead
         // while it grows; a completed short proxy needs no extra lead.
+        if (status.build_status !== 'complete' && typeof usesNativeHls === 'function' &&
+                usesNativeHls() && (!canUseFiniteProxyTimeline() ||
+                    !Number.isFinite(Number(status.duration)) || Number(status.duration) <= 0)) return false;
         return !!status.playable && (status.build_status === 'complete' ||
             Number(status.available_end) >= Math.max(0, target) +
                 Math.max(18, Number(status.switch_lead_seconds) || 18));
@@ -2163,9 +2256,14 @@
     }
 
     video.addEventListener('seeking', () => {
-        if (currentProxy?.continuous && !restoringPlayhead && currentlyUsingProxy &&
-                !continuousHasTime(currentProxy, video.currentTime + proxyOffset)) {
-            void seekSource(video.currentTime + proxyOffset);
+        const target = video.currentTime + proxyOffset;
+        const changedPendingSeek = restoringPlayhead &&
+            typeof seekIntentActive !== 'undefined' && seekIntentActive &&
+            Math.abs(target - pendingResumeSeconds) > .5;
+        if (currentProxy?.continuous && currentlyUsingProxy &&
+                (!restoringPlayhead || changedPendingSeek) &&
+                (!continuousHasTime(currentProxy, target) || changedPendingSeek)) {
+            void seekSource(target);
         }
     });
     // CONTINUOUS_WAIT_END
@@ -2515,3 +2613,4 @@
 </script>
 </body>
 </html>
+

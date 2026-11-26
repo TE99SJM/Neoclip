@@ -50,3 +50,18 @@ assert.equal(rateWrites, 2, 'Unsupported choices must not alter the player');
 assert.match(html.match(/<video\b[^>]*>/s)[0], /\bcontrols\b/);
 assert.doesNotMatch(code, /\.controls\s*=|removeAttribute\(["']controls/);
 console.log('Playback speed: repeated metadata is inert; intentional changes and saved speed still work; native controls remain enabled');
+
+// A choice made inside Safari's own speed menu becomes the saved preference.
+video.readyState = 3;
+rate = 2;
+mediaEvents.ratechange();
+const beforeNativeWrites = rateWrites;
+for (let i=0;i<600;i++) mediaEvents.loadedmetadata();
+assert.equal(rate,2);
+assert.equal(rateWrites,beforeNativeWrites,'native choice must survive metadata without a rate command');
+assert.equal(select.value,'2.0');
+// Ignore the temporary reset while a new source has no decoded media yet.
+video.readyState=0;rate=1;mediaEvents.ratechange();
+video.readyState=3;mediaEvents.loadedmetadata();
+assert.equal(rate,2);
+console.log('Native speed menu preference survives metadata and attachment reset');

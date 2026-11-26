@@ -1,5 +1,10 @@
 # NeoClip playback branch — small verified releases
 
+## Current test deployment and native controls
+The user subsequently authorized replacing the existing test app on port 8001. The original P1 isolation instructions below describe the initial publication only; a third container is no longer required. Main on port 8000 remains outside this experiment.
+
+Playback 1.1 (`2.2.0-playback.2`) addresses missing native speed/timeline controls with a finite MediaSource timeline for growing proxies. See [native playback controls spec and checks](NATIVE_PLAYBACK_CONTROLS.md). P2–P4 remain future work; this does not add original-first startup or prioritized encoding after a skip.
+
 ## Clarified requirements and isolation
 Start from test commit 46b0cc23f8136fc61ff0838f8c5796048d69728b on a new `neoclip-playback` branch. User explicitly requires the current test server be left intact. Publish branch code only: do not advance `neoclip-240-test` or stable, restart either existing container, repoint their checkouts, or modify their data/shared queue.
 
@@ -38,3 +43,4 @@ RFC 8216 sections 4.3.3.5, 6.2.1 and 6.3.3: EVENT is append-only; listed media m
 - Canonical JavaScript: all 18 suites passed. Outer-copy JavaScript: all 15 suites passed. Ruff passed for both copies. Executable tests verify safe early startup/resume, sequential waiting for an uncovered skip, cancellation, and completion heartbeat without writes to video.src/currentTime/paused state.
 - Reviewed both application copies against the exact test-2.1.6 base; UI differences between copies are preserved. Backend changes are limited to growing playlist delivery/readiness and accepting an already-published tail section when the container-duration estimate rounded down. Existing encoding, cache, queue and render implementations are retained.
 - No changes deployed to mserver. No current test or production branch/container/queue modified. This release requires a separate lab for physical Safari and NVIDIA verification; the native browser may show live-style controls while the playlist is growing.
+
