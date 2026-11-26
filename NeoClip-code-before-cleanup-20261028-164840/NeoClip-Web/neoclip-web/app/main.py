@@ -24,6 +24,7 @@ from .library import VideoLibrary
 from .library_scan import scan_directory
 from .metadata import VideoMetadata
 from .player_diagnostics import player_diagnostics_router
+from .preview_startup import preview_startup
 from .proxies import THREADS, choose_pipeline, pipeline_args
 from .queue_store import QueueStore
 from .renaming import MediaRenamer, clipped_name
@@ -48,7 +49,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="NeoClip 240", lifespan=lifespan)
-APP_BUILD = "2.2.0-playback.3"
+APP_BUILD = "2.2.0-playback.4"
 app.include_router(player_diagnostics_router(APP_BUILD))
 if origins := os.getenv("NEOCLIP_CORS_ORIGINS"):
     # Optional for a separate private preview frontend; disabled in Compose.
@@ -692,44 +693,47 @@ async def get_media(path: str) -> FileResponse:
 
 @app.post("/api/source")
 async def select_source(request: SourceRequest) -> dict:
-    refresh_queue()
-    request.path = queue_store().resolve(request.path)
-    if request.path in deleting_paths:
-        raise HTTPException(409, "This video is being deleted")
-    async with media_change_lock:
-        resolve_media_path(request.path)
+    async with preview_startup(request.path):
+        refresh_queue()
+        request.path = queue_store().resolve(request.path)
+        if request.path in deleting_paths:
+            raise HTTPException(409, "This video is being deleted")
+        async with media_change_lock:
+            await asyncio.to_thread(resolve_media_path, request.path)
 
-        state["source_path"] = request.path
-        state["queues"].setdefault(request.path, [])
-        session = editor_session_for(request.path)
-        save_queue()
-        start = (
-            request.current_time
-            if request.current_time is not None
-            else session["current_time"]
-        )
-        proxy = await proxies.start(request.path, start)
-        if start >= proxy["duration"] - 0.25:
-            start = 0
-            state["editor_sessions"][request.path]["current_time"] = 0
+            state["source_path"] = request.path
+            state["queues"].setdefault(request.path, [])
+            session = editor_session_for(request.path)
             save_queue()
-        return {**state_response(), "proxy": proxy}
+            start = (
+                request.current_time
+                if request.current_time is not None
+                else session["current_time"]
+            )
+            proxy = await proxies.start(request.path, start)
+            if start >= proxy["duration"] - 0.25:
+                start = 0
+                state["editor_sessions"][request.path]["current_time"] = 0
+                save_queue()
+            return {**state_response(), "proxy": proxy}
 
 
 @app.post("/api/proxy/queue")
 async def queue_proxy(request: SourceRequest) -> dict:
-    if request.path in deleting_paths:
-        raise HTTPException(409, "This video is being deleted")
-    job = await proxies.enqueue(request.path, request.current_time or 0)
-    return proxies.view(job)
+    async with preview_startup(request.path):
+        if request.path in deleting_paths:
+            raise HTTPException(409, "This video is being deleted")
+        job = await proxies.enqueue(request.path, request.current_time or 0)
+        return proxies.view(job)
 
 
 @app.post("/api/proxy/start")
 async def start_proxy(request: SourceRequest) -> dict:
-    if request.path in deleting_paths:
-        raise HTTPException(409, "This video is being deleted")
-    async with media_change_lock:
-        return await proxies.start(request.path, request.current_time or 0)
+    async with preview_startup(request.path):
+        if request.path in deleting_paths:
+            raise HTTPException(409, "This video is being deleted")
+        async with media_change_lock:
+            return await proxies.start(request.path, request.current_time or 0)
 
 
 @app.post("/api/media/delete")

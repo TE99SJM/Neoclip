@@ -31,6 +31,7 @@ async function exercise(fail) {
             return {ok:true,exists:false};
         },
     };
+    ctx.editorSessionReady = true;
     vm.createContext(ctx);vm.runInContext(code,ctx);
     const task=ctx.deleteVideo();
     assert.equal(ctx.deletionBusy,true);
@@ -49,3 +50,4 @@ async function exercise(fail) {
     }
 }
 (async()=>{await exercise(false);await exercise(true);console.log('delete player release and failed-delete edit retention passed')})().catch(error=>{console.error(error);process.exitCode=1});
+

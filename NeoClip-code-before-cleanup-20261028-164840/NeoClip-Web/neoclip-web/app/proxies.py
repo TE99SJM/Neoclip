@@ -193,20 +193,27 @@ class ProxyManager:
         ).hexdigest()
 
     async def probe(self, source):
-        signature = self.signature(source)
+        signature = await asyncio.to_thread(self.signature, source)
         if signature not in self.probe_cache:
-            code, out, error = await capture(
-                [
-                    "ffprobe",
-                    "-v",
-                    "error",
-                    "-show_entries",
-                    "format=duration:stream=codec_type",
-                    "-of",
-                    "json",
-                    str(source),
-                ]
-            )
+            try:
+                code, out, error = await capture(
+                    [
+                        "ffprobe",
+                        "-v",
+                        "error",
+                        "-show_entries",
+                        "format=duration:stream=codec_type",
+                        "-of",
+                        "json",
+                        str(source),
+                    ]
+                )
+            except TimeoutError:
+                raise HTTPException(
+                    503, "Reading video information timed out after 25 seconds. "
+                    "The file or its storage may not be responding. Retry shortly.",
+                    headers={"Retry-After": "5"},
+                ) from None
             if code:
                 raise HTTPException(422, "Cannot inspect video: " + error[-500:])
             data = json.loads(out)
@@ -498,3 +505,4 @@ class ProxyManager:
             )
 
         return router
+

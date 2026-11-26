@@ -27,7 +27,8 @@ function setup({name='New title.mp4', fail=false, lostReply=false, saveFails=fal
    return {ok:true,path:'Folder/New title.mp4',warning:''};
   },
  };
- vm.createContext(ctx);vm.runInContext(code,ctx);return {ctx,calls,elements};
+ ctx.editorSessionReady = true;
+    vm.createContext(ctx);vm.runInContext(code,ctx);return {ctx,calls,elements};
 }
 (async()=>{
  assert.match(html,/id="renameVideoButton" onclick="renameVideo\(\)"/);
@@ -58,3 +59,4 @@ function setup({name='New title.mp4', fail=false, lostReply=false, saveFails=fal
  assert.equal(auto.ctx.adoptRenamedVideo('Folder/movie.mp4','Folder/movie clipped.mp4'),false);
  console.log('Rename UI: manual/cancel/failure/lost response, saved edits, cached player and automatic source identity');
 })().catch(e=>{console.error(e);process.exitCode=1});
+

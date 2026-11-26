@@ -253,7 +253,7 @@
 <body>
 <div id="pullRefreshStatus" class="pull-refresh-status hidden" role="status" aria-live="polite"></div>
 <main>
-    <p class="version">V2.2.0-playback.3</p>
+    <p class="version">V2.2.0-playback.4</p>
 
     <section id="playerSection" class="hidden">
         <video id="video"
@@ -383,6 +383,8 @@
     let activeFile = null;
     let proxyOffset = 0;
     let selectionBusy = false;
+    let failedSelection = null;
+    let editorSessionReady = true;
     let deletionBusy = false;
     let pendingSelection = null;
 
@@ -743,7 +745,7 @@
     }
 
     function editorSessionPayload() {
-        if (!currentSourcePath) {
+        if (!editorSessionReady || !currentSourcePath) {
             return null;
         }
 
@@ -1367,7 +1369,15 @@
             }
         },
     });
-    function retryPreview() { previewRecovery.request({manual: true}); }
+    function retryPreview() {
+        if (selectionBusy || deletionBusy) return;
+        if (failedSelection) {
+            const {file, options} = failedSelection;
+            void selectVideo(file, options);
+            return;
+        }
+        previewRecovery.request({manual: true});
+    }
     function resumePreviewRecovery() {
         if (document.visibilityState === 'hidden' || selectionBusy || deletionBusy) return;
         if (currentSourcePath && currentlyUsingProxy && !restoringPlayhead &&
@@ -1478,7 +1488,7 @@
     }
 
     async function renameVideo() {
-        if (!currentSourcePath || deletionBusy || selectionBusy) return;
+        if (!currentSourcePath || deletionBusy || selectionBusy || !editorSessionReady) return;
         const oldPath = currentSourcePath;
         const name = window.prompt('Rename video (keep the file extension):', oldPath.split('/').pop());
         if (name === null || name.trim() === oldPath.split('/').pop()) return;
@@ -1536,7 +1546,7 @@
     // FILE_RENAME_END
 
     async function deleteVideo() {
-        if (!currentSourcePath || deletionBusy || selectionBusy) return;
+        if (!currentSourcePath || deletionBusy || selectionBusy || !editorSessionReady) return;
         const pathToDelete = currentSourcePath;
         const name = pathToDelete.split("/").pop();
         if (!window.confirm(`Delete "${name}"?\n\nThis permanently removes the source file and its 240p proxy.\nThis cannot be undone.`)) return;
@@ -1604,6 +1614,7 @@
         // The persisted server job continues if this page closes or moves on.
         void api("/api/proxy/queue", {
             method: "POST",
+            timeoutMs: 45000,
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({path: file.path, current_time: options.session?.current_time || 0})
         }).catch(error => {
@@ -1615,8 +1626,10 @@
             return;
         }
         selectionBusy = true;
+        failedSelection = null;
         try {
         await saveEditorSessionNow(2500).catch(() => {});
+        editorSessionReady = false;
         previewRecovery.cancel();
         restoringPlayhead = false;
         document.getElementById("retryPreviewButton").classList.add("hidden");
@@ -1635,6 +1648,7 @@
 
         const selectedState = await api("/api/source", {
             method: "POST",
+            timeoutMs: 45000,
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({path: file.path, current_time: options.session?.current_time, native_vod: usesNativeHls()})
         });
@@ -1642,6 +1656,7 @@
         applyEditorSession(
             selectedState.current_session || options.session || {}
         );
+        editorSessionReady = true;
         currentProxy = selectedState.proxy;
         proxyOffset = currentProxy.start_seconds;
         sourceDuration = currentProxy.duration;
@@ -1665,12 +1680,18 @@
         // Watch the proxy in the background. Do not block the rest of the UI.
         watchProxyAndSwitch(file, thisWatchToken);
 
-        await loadState();
+        await loadState().catch(() => {});
         if (options.scroll !== false) {
             window.scrollTo({top: 0, behavior: "smooth"});
         }
         } catch (error) {
-            document.getElementById("fileStatus").textContent = error.message;
+            failedSelection = {file, options};
+            const message = `Could not open this video: ${error.message}. Tap Retry preview.`;
+            document.getElementById("fileStatus").textContent = message;
+            document.getElementById("selectedFile").textContent = message;
+            document.getElementById("pipelineStatus").textContent = message;
+            document.getElementById("playerSection").classList.remove("hidden");
+            document.getElementById("retryPreviewButton").classList.remove("hidden");
         } finally {
             selectionBusy = false;
             if (pendingSelection) {
@@ -1688,7 +1709,7 @@
         ) {
             try {
                 const status = await api(
-                    proxyStatusUrl(currentProxy)
+                    proxyStatusUrl(currentProxy), {timeoutMs: 10000}
                 );
                 if (watchToken !== proxyWatchToken) return;
                 currentProxy = status;
@@ -1733,8 +1754,11 @@
                           `built to ${formatClock(available)}`;
 
             } catch (error) {
+                if (watchToken !== proxyWatchToken) return;
                 document.getElementById("selectedFile").textContent =
-                    `${file.path} — preparing 240p stream…`;
+                    `${file.path} — preview status unavailable: ${error.message}. Retrying…`;
+                document.getElementById("pipelineStatus").textContent = `Preview status unavailable: ${error.message}. Retrying…`;
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
 
             // Poll quickly while the first segment is being written so playback
@@ -2128,6 +2152,7 @@
     }
 
     async function addClip() {
+        if (!editorSessionReady) return;
         if (markInSeconds === null || markOutSeconds === null) {
             alert("Set both IN and OUT first.");
             return;
@@ -2184,7 +2209,7 @@
 
     async function loadState() {
         const path = currentSourcePath;
-        const data = await api(queueStateUrl());
+        const data = await api(queueStateUrl(), {timeoutMs: 10000});
         if (path === currentSourcePath) renderClipQueue(data);
     }
 

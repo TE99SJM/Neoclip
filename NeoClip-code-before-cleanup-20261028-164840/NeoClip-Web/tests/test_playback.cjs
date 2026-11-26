@@ -57,6 +57,7 @@ function setup(offset = 6) {
         pause(){this.paused=true}, load(){}, removeAttribute(){},
         addEventListener(name,fn){(listeners[name] ||= []).push(fn)},
     };
+    ctx.editorSessionReady = true;
     vm.createContext(ctx);
     const include=(start,end)=>vm.runInContext(html.slice(html.indexOf(start),html.indexOf(end,html.indexOf(start))),ctx);
     include('    async function seekVideoToSavedTime(', '    async function api(');
@@ -107,3 +108,4 @@ function setup(offset = 6) {
     }
     console.log('Replay, native replay, EOF bookmark, first-frame and one-second checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1});
+
