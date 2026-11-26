@@ -19,6 +19,7 @@ class ContinuousProxyManager(PersistentProxyManager):
     cache_name = "240-continuous-v1"
     segment_wait_seconds = 20
     progress_timeout = 90
+    startup_lead_seconds = 3 * SEGMENT_SECONDS
 
     def __init__(self, root, resolve, clock=time.time):
         super().__init__(root, resolve, clock)
@@ -76,6 +77,8 @@ class ContinuousProxyManager(PersistentProxyManager):
             raise RuntimeError("Invalid continuous preview playlist")
         if any(not math.isfinite(n) or n <= 0 for n in lengths):
             raise RuntimeError("Invalid continuous preview duration")
+        if any(int(n + .5) > SEGMENT_SECONDS for n in lengths):
+            raise RuntimeError("Preview section exceeds the fixed playlist target duration")
         self.built[job["id"]] = set(range(len(names)))
         job["segment_lengths"] = lengths
         job["encoder_finished"] = "#EXT-X-ENDLIST" in text.splitlines()
@@ -83,27 +86,44 @@ class ContinuousProxyManager(PersistentProxyManager):
 
     def view(self, job):
         view = super().view(job)
+        complete = job.get("build_status") == "complete" and bool(job.get("continuous_complete"))
+        growing = not complete
         view.update(
             continuous=True,
-            playable=job.get("build_status") == "complete" and bool(job.get("continuous_complete")),
+            growing=growing,
+            delivery="event" if growing else "vod",
+            playable=complete or (
+                job.get("build_status") == "building"
+                and job.get("available_end", 0) >= self.startup_lead_seconds
+            ),
+            switch_lead_seconds=self.startup_lead_seconds,
             available_end=job.get("available_end", 0),
             available_seconds=job.get("available_end", 0),
-            url=f"/api/vod/playlist.m3u8?id={job['id']}&generation={job.get('generation', '')}",
+            url=f"/api/vod/playlist.m3u8?id={job['id']}&generation={job.get('generation', '')}"
+                + ("&growing=true" if growing else ""),
         )
         return view
 
-    def playlist(self, job):
-        if not self.view(job)["playable"]:
+    def playlist(self, job, growing=False):
+        complete = job.get("build_status") == "complete" and bool(job.get("continuous_complete"))
+        lengths = job.get("segment_lengths", [])
+        if not lengths or (not growing and not complete):
             raise HTTPException(503, "Preview is still building", headers={"Retry-After": "2"})
-        lengths = job["segment_lengths"]
-        lines = ["#EXTM3U", "#EXT-X-VERSION:6", "#EXT-X-PLAYLIST-TYPE:VOD",
-                 f"#EXT-X-TARGETDURATION:{math.ceil(max(lengths))}", "#EXT-X-MEDIA-SEQUENCE:0",
+        # The growing URL remains EVENT through completion: append ENDLIST,
+        # never change headers or force an existing player onto a new source.
+        playlist_type = "EVENT" if growing else "VOD"
+        target_duration = SEGMENT_SECONDS if growing else math.ceil(max(lengths))
+        start = 0 if growing else job["resume_seconds"]
+        lines = ["#EXTM3U", "#EXT-X-VERSION:6", f"#EXT-X-PLAYLIST-TYPE:{playlist_type}",
+                 f"#EXT-X-TARGETDURATION:{target_duration}", "#EXT-X-MEDIA-SEQUENCE:0",
                  "#EXT-X-INDEPENDENT-SEGMENTS",
-                 f"#EXT-X-START:TIME-OFFSET={job['resume_seconds']:.6f},PRECISE=YES"]
+                 f"#EXT-X-START:TIME-OFFSET={start:.6f},PRECISE=YES"]
         for index, length in enumerate(lengths):
             lines += [f"#EXTINF:{length:.6f},",
                       f"segment/segment_{index:05d}.ts?id={job['id']}&generation={job['generation']}"]
-        return "\n".join([*lines, "#EXT-X-ENDLIST", ""])
+        if complete:
+            lines.append("#EXT-X-ENDLIST")
+        return "\n".join([*lines, ""])
 
     def continuous_command(self, job, source, directory):
         before, after = pipeline_args(job["mode"], height=240)
@@ -213,7 +233,9 @@ class ContinuousProxyManager(PersistentProxyManager):
             self.save(job)
 
     async def segment(self, job, index, generation=None):
-        if not 0 <= index < self.count(job):
+        # Container duration can round below the final encoded section. An
+        # already-published section is authoritative even before finalization.
+        if index < 0 or (index >= self.count(job) and index not in self.built[job["id"]]):
             raise HTTPException(404, "Segment not found")
         generation = generation or job.get("generation")
         deadline = asyncio.get_running_loop().time() + self.segment_wait_seconds
@@ -251,11 +273,11 @@ class ContinuousProxyManager(PersistentProxyManager):
             return self.view(self.get(id))
 
         @router.get("/api/vod/playlist.m3u8")
-        async def playlist(id: str, generation: str):
+        async def playlist(id: str, generation: str, growing: bool = False):
             job = self.get(id)
             if generation != job.get("generation"):
                 raise HTTPException(410, "Preview restarted; reconnect")
-            return Response(self.playlist(job), media_type="application/vnd.apple.mpegurl",
+            return Response(self.playlist(job, growing), media_type="application/vnd.apple.mpegurl",
                             headers={"Cache-Control": "no-store"})
 
         @router.get("/api/vod/segment/{name}")

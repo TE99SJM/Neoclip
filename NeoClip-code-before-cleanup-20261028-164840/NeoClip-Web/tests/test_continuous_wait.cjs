@@ -25,11 +25,15 @@ function setup() {
  return {ctx,calls,events,messages};
 }
 (async()=>{
+ const early=setup();Object.assign(early.ctx.currentProxy,{build_status:'building',available_end:18,switch_lead_seconds:18});
+ assert.equal(early.ctx.continuousHasTime(early.ctx.currentProxy,0),true);
+ assert.equal(early.ctx.continuousHasTime(early.ctx.currentProxy,1),false,'resume needs encoded lead');
+ await early.ctx.seekSource(0);assert.deepEqual(early.calls,[['seek',0],'play','save']);
  const ready=setup();await ready.ctx.seekSource(3);
  assert.deepEqual(ready.calls,[['seek',3],'play','save']);
- const building=setup();Object.assign(building.ctx.currentProxy,{playable:false,build_status:'building',available_end:120});await building.ctx.seekSource(90);
+ const building=setup();Object.assign(building.ctx.currentProxy,{playable:false,build_status:'building',available_end:120});building.ctx.api=async()=>{building.calls.push('status');return {...building.ctx.currentProxy,playable:true,available_end:114}};await building.ctx.seekSource(90);
  assert.deepEqual(building.calls,['pause','status',['seek',90],'play','save']);
- assert.ok(building.messages.some(s=>s.includes('Preparing full preview')));
+ assert.ok(building.messages.some(s=>s.includes('Preparing preview at 90')));
  assert.equal(building.ctx.pendingResumeSeconds,90);
  assert.equal(building.ctx.restoringPlayhead,false);
  const retry=setup();retry.ctx.video.error={code:3};await retry.ctx.seekSource(3,{autoplay:false});

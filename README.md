@@ -1,4 +1,12 @@
-# NeoClip 240
+# NeoClip playback experiment
+
+**Isolated feature branch: `neoclip-playback` — 2.2.0-playback.1.** This branch starts from test 2.1.6 and contains only the first playback experiment. Current production and test branches/containers are not updated by this work. Any live trial must use a third playback-lab container with its own checkout, port, data, exports and queue; source media should be mounted read-only. No lab is deployed yet. The older deployment commands later in this historical README are not instructions for installing this experiment on either existing server.
+
+**Update 1:** selecting a video starts its continuous 240p encode from zero. Playback can begin once roughly 18 seconds of media is encoded, or when a shorter preview finishes. This is encoded media length, not a fixed wall-clock delay. Only completed sections appear in the growing playlist. It ends naturally when the build finishes without replacing the player's source. Native controls stay enabled; available seeking and Safari's stream labels may reflect a growing stream until completion.
+
+Unbuilt skips still wait for sequential encoding in this first release. Priority encoding after a skip, compatible original-quality startup, and a controlled proxy handoff are separate later tickets. See [the staged plan and acceptance checks](docs/PLAYBACK_ROADMAP.md).
+
+## Earlier NeoClip 240 documentation
 
 **Cut video clips in your browser. Keep the files on your own server.**
 

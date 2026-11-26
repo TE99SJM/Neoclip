@@ -279,7 +279,7 @@
 <body>
 <div id="pullRefreshStatus" class="pull-refresh-status hidden" role="status" aria-live="polite"></div>
 <main>
-    <p class="version">V2.1.6</p>
+    <p class="version">V2.2.0-playback.1</p>
 
     <section id="playerSection" class="hidden">
         <div id="videoStage" class="video-stage" aria-busy="false">
@@ -1258,6 +1258,7 @@
                 const status = await api(proxyStatusUrl(currentProxy));
                 if (currentProxy?.id !== status.id) return;
                 currentProxy = status;
+                if (status.continuous) sourceDuration = status.duration;
                 if (adoptRenamedVideo(path, status.path)) return;
                 showPipeline(status);
                 if (status.status === "error" || status.status === "stopped") {
@@ -1734,13 +1735,13 @@
         startHeartbeat(file.path);
         updateSourceClock();
 
-        // Keep editing available while the complete local preview builds.
-        // Native VOD playback starts only once all advertised sections exist.
+        // Keep editing available while encoding from zero. Start playback
+        // once the growing playlist has enough completed media ahead.
         document.getElementById("selectedFile").textContent =
             `${file.path} — preparing 240p stream…`;
 
         // Kick off the player on a neutral source; watchProxyAndSwitch will
-        // attach the finalized HLS playlist once the full preview is playable.
+        // attach once a safe buffer is ready; the same playlist grows and ends.
         destroyHls();
         video.removeAttribute("src");
         video.load();
@@ -1795,16 +1796,14 @@
                     1,
                     Number(status.switch_lead_seconds) || 1
                 );
-                const resumeReady = (
-                    pendingResumeSeconds <= 0 ||
-                    (!status.continuous && status.status === "ready") ||
-                    (status.continuous && continuousHasTime(status, pendingResumeSeconds)) ||
-                    available >= pendingResumeSeconds + switchLead
-                );
+                const resumeReady = status.continuous
+                    ? continuousHasTime(status, pendingResumeSeconds)
+                    : (pendingResumeSeconds <= 0 || status.status === "ready" ||
+                        available >= pendingResumeSeconds + switchLead);
 
                 // When restoring a playhead, wait until the live proxy has
                 // encoded that portion of the source before attaching it.
-                setPlayerLoading("proxy", `Preparing full preview: ${status.progress || 0}% — continues in background…`);
+                setPlayerLoading("proxy", `Preparing preview at ${formatClock(pendingResumeSeconds)} — built to ${formatClock(available)}…`);
                 if (status.playable && resumeReady) {
                     const switched = await switchToProxy(
                         file,
@@ -2097,15 +2096,17 @@
     let attachedContinuousGeneration = null;
 
     function continuousHasTime(status, target) {
-        // A VOD manifest promises every section exists. Never attach a partial
-        // generation, even when the requested position has already encoded.
-        return !!status.playable && status.build_status === 'complete';
+        // EVENT lists only finished sections. Keep three sections of lead
+        // while it grows; a completed short proxy needs no extra lead.
+        return !!status.playable && (status.build_status === 'complete' ||
+            Number(status.available_end) >= Math.max(0, target) +
+                Math.max(18, Number(status.switch_lead_seconds) || 18));
     }
 
     async function waitForContinuousCoverage(status, target, valid) {
         while (status.continuous && !continuousHasTime(status, target)) {
             if (!valid()) throw new Error('Selection changed');
-            const message = `Preparing full preview: ${status.progress || 0}% — continues if you leave the app`;
+            const message = `Preparing preview at ${formatClock(target)} — built to ${formatClock(status.available_end || 0)}. Continues in background.`;
             document.getElementById('selectedFile').textContent = message;
             if (typeof setPlayerLoading === 'function') setPlayerLoading('proxy', message);
             await new Promise(resolve => setTimeout(resolve, 1000));
