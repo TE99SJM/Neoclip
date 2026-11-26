@@ -5,7 +5,7 @@ const html=readFileSync(`${__dirname}/../app/web/index.html`,'utf8');
 const code=html.slice(html.indexOf('// RECOVERY_CONTROLLER_START'),html.indexOf('    function startPlaybackWatchdog()'));
 const continuous=html.slice(html.indexOf('// CONTINUOUS_WAIT_START'),html.indexOf('// CONTINUOUS_WAIT_END'));
 const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve()};
-function setup({autoplay=false, fail=false}={}) {
+function setup({autoplay=false, fail=false, missing=false}={}) {
  const timers=new Map(),events={},elements=new Map(),calls=[];
  let serial=0;
  const video={currentTime:29,paused:!autoplay,error:{code:3},readyState:2,
@@ -20,13 +20,18 @@ function setup({autoplay=false, fail=false}={}) {
    getElementById(id){if(!elements.has(id))elements.set(id,{textContent:'',classList:{toggle(){}}});return elements.get(id)}},
   window:{addEventListener(n,f){(events[n]||=[]).push(f)}},
   editorSessionPayload:()=>({path:ctx.currentSourcePath,current_time:ctx.pendingResumeSeconds,mark_in:10,mark_out:40,clip_name:'Keep'}),
-  usesNativeHls:()=>true,sourceTime:()=>video.currentTime,resetPlayerLoading(){},setPlayerLoading(){},clearPlayerLoading(){},
+  proxyStatusUrl:()=>'/api/vod/status?id=old',usesNativeHls:()=>true,sourceTime:()=>video.currentTime,resetPlayerLoading(){},setPlayerLoading(){},clearPlayerLoading(){},
   startHeartbeat(){calls.push('heartbeat')},showPipeline(){},updateSourceClock(){},scheduleEditorSessionSave(){calls.push('save')},
   async api(url,options){
-   calls.push(url);assert.equal(url,'/api/proxy/start');assert.equal(options.timeoutMs,10000);
-   assert.deepEqual(JSON.parse(options.body),{path:'movie.mkv',current_time:29,native_vod:true});
+   calls.push(url);assert.equal(options.timeoutMs,10000);
    if(fail)throw Error('Server unavailable');
-   return {id:'cached',url:'/api/vod/playlist.m3u8?id=cached',start_seconds:0,duration:277,playable:true};
+   if(url==='/api/vod/status?id=old') {
+    if(missing)throw Object.assign(Error('Expired'),{status:404});
+   } else {
+    assert.equal(url,'/api/proxy/start');assert.equal(missing,true,'cached recovery must not access NAS');
+    assert.deepEqual(JSON.parse(options.body),{path:'movie.mkv',current_time:29,native_vod:true});
+   }
+   return {id:'cached',path:'movie.mkv',url:'/api/vod/playlist.m3u8?id=cached',start_seconds:0,duration:277,playable:true};
   },
   async setVideoSrc(url){calls.push(url);video.error=null;video.currentTime=0},
   async seekVideoToSavedTime(t,token){assert.equal(token,ctx.proxyWatchToken);calls.push(['seek',t]);video.currentTime=t},
@@ -41,10 +46,14 @@ function setup({autoplay=false, fail=false}={}) {
   await s.tick();assert.equal(s.ctx.video.currentTime,29);assert.equal(s.ctx.video.paused,!autoplay);
   assert.equal(s.ctx.markInSeconds,10);assert.equal(s.ctx.markOutSeconds,40);
   assert.equal(s.ctx.restoringPlayhead,false);assert.equal(s.ctx.currentProxy.id,'cached');
-  assert.equal(s.calls.filter(c=>c==='/api/proxy/start').length,1);
+  assert.equal(s.calls.filter(c=>c==='/api/proxy/start').length,0);
+  assert.equal(s.calls.filter(c=>c==='/api/vod/status?id=old').length,1);
   assert.ok(s.calls.includes('save'));assert.match(s.elements.get('selectedFile').textContent,/restored/);
  }
+ const expired=setup({missing:true});await expired.event('error');await expired.tick();
+ assert.ok(expired.calls.includes('/api/proxy/start'));assert.equal(expired.ctx.video.currentTime,29);
  const failed=setup({fail:true});await failed.event('error');await failed.tick();
+ assert.ok(!failed.calls.includes('/api/proxy/start'),'network failures keep the cached recovery path');
  assert.equal(failed.ctx.pendingResumeSeconds,29);assert.equal(failed.ctx.restoringPlayhead,true,'failed recovery protects saved position');
  const locked=setup();locked.ctx.document.visibilityState='hidden';await locked.event('error');assert.equal(locked.timers.size,0);
  locked.ctx.document.visibilityState='visible';await locked.event('visibilitychange');await locked.tick();

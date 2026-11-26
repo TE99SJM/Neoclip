@@ -279,7 +279,7 @@
 <body>
 <div id="pullRefreshStatus" class="pull-refresh-status hidden" role="status" aria-live="polite"></div>
 <main>
-    <p class="version">V2.1.5</p>
+    <p class="version">V2.1.6</p>
 
     <section id="playerSection" class="hidden">
         <div id="videoStage" class="video-stage" aria-busy="false">
@@ -799,7 +799,9 @@
                     const data = await response.json();
                     message = data.detail || message;
                 } catch (_) {}
-                throw new Error(message);
+                const error = new Error(message);
+                error.status = response.status;
+                throw error;
             }
             return await response.json();
         } catch (error) {
@@ -1371,6 +1373,23 @@
     }
     // RECOVERY_CONTROLLER_END
 
+    async function cachedRecoveryProxy(saved) {
+        if (currentProxy?.id) {
+            try {
+                const cached = await api(proxyStatusUrl(currentProxy), {timeoutMs: 10000});
+                if (cached.path === saved.path) return cached;
+            } catch (error) {
+                // A transient HTTP/network outage is not a missing cache. Retry
+                // this local job without reopening an unavailable NAS source.
+                if (error.status !== 404) throw error;
+            }
+        }
+        return api('/api/proxy/start', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, timeoutMs: 10000,
+            body: JSON.stringify({path: saved.path, current_time: saved.current_time, native_vod: usesNativeHls()}),
+        });
+    }
+
     const previewRecovery = createPreviewRecovery({
         snapshot: () => {
             if (!currentSourcePath || !activeFile || deletionBusy || selectionBusy) return null;
@@ -1389,10 +1408,7 @@
             restoringPlayhead = true;
             if (typeof setPlayerLoading === 'function') setPlayerLoading('recovery', 'Reconnecting preview…');
             try {
-                let status = await api('/api/proxy/start', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'}, timeoutMs: 10000,
-                    body: JSON.stringify({path: saved.path, current_time: saved.current_time, native_vod: usesNativeHls()}),
-                });
+                let status = await cachedRecoveryProxy(saved);
                 if (!valid()) return;
                 status = await waitForContinuousCoverage(status, saved.current_time, valid);
                 if (!valid()) return;
@@ -1718,16 +1734,13 @@
         startHeartbeat(file.path);
         updateSourceClock();
 
-        // Show the player right away. The 240p proxy stream is attached as
-        // soon as the first segments exist, so playback begins while the
-        // proxy is still being built. We do not rely on the original file
-        // here because many source containers (mkv/avi/...) will not play
-        // in a browser at all.
+        // Keep editing available while the complete local preview builds.
+        // Native VOD playback starts only once all advertised sections exist.
         document.getElementById("selectedFile").textContent =
             `${file.path} — preparing 240p stream…`;
 
         // Kick off the player on a neutral source; watchProxyAndSwitch will
-        // attach the live HLS playlist the moment it becomes playable.
+        // attach the finalized HLS playlist once the full preview is playable.
         destroyHls();
         video.removeAttribute("src");
         video.load();
@@ -1791,7 +1804,7 @@
 
                 // When restoring a playhead, wait until the live proxy has
                 // encoded that portion of the source before attaching it.
-                setPlayerLoading("proxy", `Preparing preview at ${formatClock(pendingResumeSeconds)}…`);
+                setPlayerLoading("proxy", `Preparing full preview: ${status.progress || 0}% — continues in background…`);
                 if (status.playable && resumeReady) {
                     const switched = await switchToProxy(
                         file,
@@ -1829,7 +1842,8 @@
             return;
         }
 
-        const resumeAt = Math.max(0, Number(pendingResumeSeconds) || 0);
+        sourceDuration = status.duration;
+        const resumeAt = Math.min(Math.max(0, Number(pendingResumeSeconds) || 0), Math.max(0, sourceDuration - .2));
         setPlayerLoading("proxy", `Loading preview at ${formatClock(resumeAt)}…`);
         currentlyUsingProxy = true;
         restoringPlayhead = true;
@@ -2083,14 +2097,15 @@
     let attachedContinuousGeneration = null;
 
     function continuousHasTime(status, target) {
-        return !!status.playable && (status.build_status === 'complete' ||
-            Number(status.available_end) > target + .1);
+        // A VOD manifest promises every section exists. Never attach a partial
+        // generation, even when the requested position has already encoded.
+        return !!status.playable && status.build_status === 'complete';
     }
 
     async function waitForContinuousCoverage(status, target, valid) {
         while (status.continuous && !continuousHasTime(status, target)) {
             if (!valid()) throw new Error('Selection changed');
-            const message = `Building preview to ${formatClock(target)} — ready through ${formatClock(status.available_end || 0)}`;
+            const message = `Preparing full preview: ${status.progress || 0}% — continues if you leave the app`;
             document.getElementById('selectedFile').textContent = message;
             if (typeof setPlayerLoading === 'function') setPlayerLoading('proxy', message);
             await new Promise(resolve => setTimeout(resolve, 1000));

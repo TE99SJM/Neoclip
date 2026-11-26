@@ -5,7 +5,7 @@ const html=readFileSync(`${__dirname}/../app/web/index.html`,'utf8');
 const code=html.slice(html.indexOf('// CONTINUOUS_WAIT_START'),html.indexOf('// CONTINUOUS_WAIT_END'));
 function setup() {
  const events={}, calls=[], messages=[];
- const ctx={currentProxy:{id:'job',generation:'one',continuous:true,playable:true,build_status:'building',available_end:6},
+ const ctx={currentProxy:{id:'job',generation:'one',continuous:true,playable:true,build_status:'complete',available_end:180},
   activeFile:{path:'movie.mkv'},selectionBusy:false,deletionBusy:false,proxyWatchToken:1,
   sourceDuration:180,proxyOffset:0,userWantsPlayback:true,currentlyUsingProxy:true,
   restoringPlayhead:false,pendingResumeSeconds:0,playbackEnded:false,
@@ -16,7 +16,7 @@ function setup() {
   document:{getElementById(){return {set textContent(s){messages.push(s)}}}},
   setTimeout(fn){queueMicrotask(fn)},setPlayerLoading(){},clearPlayerLoading(){},
   scheduleEditorSessionSave(){calls.push('save')},proxyStatusUrl:()=>'/status',
-  async api(){calls.push('status');return {...ctx.currentProxy,available_end:120}},
+  async api(){calls.push('status');return {...ctx.currentProxy,playable:true,build_status:'complete',available_end:180}},
   async setVideoSrc(){calls.push('attach');ctx.video.error=null},
   async seekVideoToSavedTime(t){calls.push(['seek',t]);ctx.video.currentTime=t},
   legacySeekSource(){calls.push('legacy')},
@@ -27,19 +27,19 @@ function setup() {
 (async()=>{
  const ready=setup();await ready.ctx.seekSource(3);
  assert.deepEqual(ready.calls,[['seek',3],'play','save']);
- const building=setup();await building.ctx.seekSource(90);
+ const building=setup();Object.assign(building.ctx.currentProxy,{playable:false,build_status:'building',available_end:120});await building.ctx.seekSource(90);
  assert.deepEqual(building.calls,['pause','status',['seek',90],'play','save']);
- assert.ok(building.messages.some(s=>s.includes('90')));
+ assert.ok(building.messages.some(s=>s.includes('Preparing full preview')));
  assert.equal(building.ctx.pendingResumeSeconds,90);
  assert.equal(building.ctx.restoringPlayhead,false);
  const retry=setup();retry.ctx.video.error={code:3};await retry.ctx.seekSource(3,{autoplay:false});
  assert.deepEqual(retry.calls,['attach',['seek',3],'pause','save']);
  const generation=setup();generation.ctx.currentProxy.generation='two';await generation.ctx.seekSource(3);
  assert.equal(generation.calls.filter(c=>c==='attach').length,1);
- const cancelled=setup();cancelled.ctx.api=async()=>{cancelled.ctx.proxyWatchToken++;return {...cancelled.ctx.currentProxy,available_end:120}};
+ const cancelled=setup();Object.assign(cancelled.ctx.currentProxy,{playable:false,build_status:'building'});cancelled.ctx.api=async()=>{cancelled.ctx.proxyWatchToken++;return {...cancelled.ctx.currentProxy,available_end:120}};
  await cancelled.ctx.seekSource(90);
  assert.equal(cancelled.calls.some(Array.isArray),false,'old selection must not seek the new video');
- const native=setup();native.ctx.video.currentTime=90;native.events.seeking();
+ const native=setup();Object.assign(native.ctx.currentProxy,{playable:false,build_status:'building'});native.ctx.video.currentTime=90;native.events.seeking();
  for(let i=0;i<20;i++)await Promise.resolve();
  assert.ok(native.calls.some(c=>Array.isArray(c)&&c[1]===90),'native slider waits for coverage');
  assert.equal(native.calls.includes('attach'),false);

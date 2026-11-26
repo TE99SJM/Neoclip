@@ -140,3 +140,12 @@ After all clips in a successful render finish, NeoClip appends ` clipped` before
 Each interrupted build restarts from the beginning with fresh generation URLs; completed runs survive restart. Existing test caches are retained separately until their original expiry or source deletion. They are not reused as continuous streams, so the first selection builds a new preview. The main and test apps continue using the existing shared clip queue and separate proxy/export directories.
 
 See [the spec and review](docs/CONTINUOUS_PROXY_SPEC.md). `scripts/deploy_current_and_continuous.sh <test-commit>` installs the pinned production snapshot on port 8000 before switching the test checkout on port 8001. It stops on an active render or failed version check and leaves existing Compose mounts and queue files in place. This script is specific to Samuel's documented mserver paths.
+
+
+## 2.1.6 test: finalized previews and cached recovery
+
+The test app now waits for the full continuous proxy before attaching Safari's native player. The initial build can take longer, especially for long recordings; progress remains visible and the build continues if the app closes. Finished previews keep the full native slider and serve all sections directly from the local cache. This supersedes the partial-playback behavior described for 2.1.5 above.
+
+The completed playlist uses FFmpeg's actual section durations instead of estimated container durations. Audio is padded or trimmed to the picture's length, avoiding an endless retry when track lengths differ. Lock/wake or network-error recovery first reconnects to the existing cached job without reopening the NAS source. Shared queues, layout, pull refresh, rename and the fixed 14-day retention remain intact.
+
+This update is for `neoclip-240-test` / port 8001 only. Update the test checkout and recreate its container; do not rerun the production-promotion installer for this fix. See [the reproduction, acceptance checks and review](docs/PREVIEW_RELIABILITY_SPEC.md).

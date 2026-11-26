@@ -24,12 +24,12 @@ def run(args):
     return subprocess.run(args, check=True, capture_output=True, text=True)
 
 
-def source_file(root, audio=True, duration=13.2, rate=30):
+def source_file(root, audio=True, duration=13.2, rate=30, audio_duration=None):
     source = root / 'source.mkv'
     args = ['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
             f'testsrc2=size=320x180:rate={rate}:duration={duration}']
     if audio:
-        args += ['-f', 'lavfi', '-i', f'sine=frequency=440:sample_rate=44100:duration={duration}', '-c:a', 'aac']
+        args += ['-f', 'lavfi', '-i', f'sine=frequency=440:sample_rate=44100:duration={audio_duration or duration}', '-c:a', 'aac']
     run([*args, '-c:v', 'libx264', '-threads', '2', '-preset', 'ultrafast', str(source)])
     return source
 
@@ -61,10 +61,10 @@ def assert_transport_continuity(paths):
             previous[pid] = counter
 
 
-@pytest.mark.parametrize('audio,duration,rate', [(True,13.2,30), (False,13.2,30), (True,6,30), (True,6.01,25), (False,.2,30)])
-def test_real_continuous_audio_video_and_routes(tmp_path, monkeypatch, audio, duration, rate):
+@pytest.mark.parametrize('audio,duration,rate,audio_duration', [(True,13.2,30,None), (False,13.2,30,None), (True,6,30,None), (True,6.01,25,None), (False,.2,30,None), (True,6,30,20), (True,13.2,30,2)])
+def test_real_continuous_audio_video_and_routes(tmp_path, monkeypatch, audio, duration, rate, audio_duration):
     monkeypatch.setattr(persistent_proxy, 'choose_pipeline', cpu)
-    source = source_file(tmp_path, audio, duration, rate)
+    source = source_file(tmp_path, audio, duration, rate, audio_duration)
 
     async def build():
         manager = ContinuousProxyManager(tmp_path/'cache', lambda _: source)
@@ -72,6 +72,8 @@ def test_real_continuous_audio_video_and_routes(tmp_path, monkeypatch, audio, du
         job = manager.jobs[view['id']]
         await wait_until(lambda: job['build_status'] in ('complete', 'retrying'))
         assert job['build_status'] == 'complete', job.get('error')
+        assert abs(job['duration'] - duration) < .15
+        assert manager.view(job)['playable']
         assert job['expires_at'] == job['completed_at'] + RETENTION_SECONDS
         await manager.close()
         return manager, job
@@ -91,6 +93,7 @@ def test_real_continuous_audio_video_and_routes(tmp_path, monkeypatch, audio, du
                 assert abs(start - previous[kind]) < .00001, (kind, start, previous[kind])
             previous[kind] = float(stream[-1]['pts_time']) + float(stream[-1]['duration_time'])
     manifest = manager.playlist(job)
+    assert [float(n) for n in re.findall(r'#EXTINF:([\d.]+)', manifest)] == job['segment_lengths']
     assert 'DISCONTINUITY' not in manifest and 'PLAYLIST-TYPE:VOD' in manifest
     local = manager.generation_dir(job)/'play.m3u8'
     local.write_text(re.sub(r'segment/(segment_\d+\.ts)\?.*', r'\1', manifest))
@@ -157,6 +160,8 @@ def publish(manager, job, count):
     for n in range(count):
         (directory/f'segment_{n:05d}.ts').write_bytes(b'closed')
         lines += ['#EXTINF:6.000000,', f'segment_{n:05d}.ts']
+    if count == manager.count(job):
+        lines.append('#EXT-X-ENDLIST')
     (directory/'encoder.m3u8').write_text('\n'.join(lines)+'\n')
     manager._published(job)
 
@@ -177,6 +182,10 @@ def test_wait_restart_no_mixed_generations_and_retention(tmp_path, monkeypatch):
         job = manager.jobs[result['id']]
         await wait_until(lambda: bool(manager.built[job['id']]))
         generation = job['generation']
+        assert not manager.view(job)['playable'], 'partial media cannot be advertised as complete VOD'
+        with pytest.raises(HTTPException) as error:
+            manager.playlist(job)
+        assert error.value.status_code == 503
         # Requests wait without launching any separate segment encoder.
         request = asyncio.create_task(manager.segment(job, 1, generation))
         await asyncio.sleep(.05)

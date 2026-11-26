@@ -1,6 +1,7 @@
 """Continuous 240p HLS: one encoder and timestamp sequence per generation."""
 
 import asyncio
+import math
 import re
 import shutil
 import time
@@ -30,18 +31,29 @@ class ContinuousProxyManager(PersistentProxyManager):
                 self._published(job)
             except (OSError, RuntimeError, ValueError):
                 self.built[job["id"]] = set()
-            directory = self.generation_dir(job)
-            intact = directory is not None and all(
-                (directory / f"segment_{index:05d}.ts").is_file()
-                for index in range(self.count(job))
-            )
-            if intact and job.get("continuous_complete") and len(self.built[job["id"]]) == self.count(job):
+            try:
+                directory = self.generation_dir(job)
+                intact = directory is not None and all(
+                    (directory / f"segment_{index:05d}.ts").is_file()
+                    and (directory / f"segment_{index:05d}.ts").stat().st_size > 0
+                    for index in range(self.count(job))
+                )
+            except OSError:
+                intact = False
+            if intact and job.get("continuous_complete") and job.get("encoder_finished") and len(self.built[job["id"]]) == self.count(job):
+                job["duration"] = sum(job["segment_lengths"])
                 job["build_status"] = "complete"
             else:
                 job["build_status"] = "queued"
                 job["continuous_complete"] = False
                 job["available_end"] = 0
                 self.built[job["id"]] = set()
+
+    @staticmethod
+    def count(job):
+        if job.get("continuous_complete") and job.get("segment_lengths"):
+            return len(job["segment_lengths"])
+        return PersistentProxyManager.count(job)
 
     def generation_dir(self, job):
         generation = job.get("generation", "")
@@ -62,14 +74,18 @@ class ContinuousProxyManager(PersistentProxyManager):
         names = re.findall(r"^segment_(\d+)\.ts$", text, re.M)
         if len(names) != len(lengths) or [int(n) for n in names] != list(range(len(names))):
             raise RuntimeError("Invalid continuous preview playlist")
+        if any(not math.isfinite(n) or n <= 0 for n in lengths):
+            raise RuntimeError("Invalid continuous preview duration")
         self.built[job["id"]] = set(range(len(names)))
+        job["segment_lengths"] = lengths
+        job["encoder_finished"] = "#EXT-X-ENDLIST" in text.splitlines()
         job["available_end"] = min(job["duration"], sum(lengths))
 
     def view(self, job):
         view = super().view(job)
         view.update(
             continuous=True,
-            playable=bool(self.built.get(job["id"])),
+            playable=job.get("build_status") == "complete" and bool(job.get("continuous_complete")),
             available_end=job.get("available_end", 0),
             available_seconds=job.get("available_end", 0),
             url=f"/api/vod/playlist.m3u8?id={job['id']}&generation={job.get('generation', '')}",
@@ -77,12 +93,14 @@ class ContinuousProxyManager(PersistentProxyManager):
         return view
 
     def playlist(self, job):
+        if not self.view(job)["playable"]:
+            raise HTTPException(503, "Preview is still building", headers={"Retry-After": "2"})
+        lengths = job["segment_lengths"]
         lines = ["#EXTM3U", "#EXT-X-VERSION:6", "#EXT-X-PLAYLIST-TYPE:VOD",
-                 f"#EXT-X-TARGETDURATION:{SEGMENT_SECONDS}", "#EXT-X-MEDIA-SEQUENCE:0",
+                 f"#EXT-X-TARGETDURATION:{math.ceil(max(lengths))}", "#EXT-X-MEDIA-SEQUENCE:0",
                  "#EXT-X-INDEPENDENT-SEGMENTS",
                  f"#EXT-X-START:TIME-OFFSET={job['resume_seconds']:.6f},PRECISE=YES"]
-        for index in range(self.count(job)):
-            length = min(SEGMENT_SECONDS, job["duration"] - index * SEGMENT_SECONDS)
+        for index, length in enumerate(lengths):
             lines += [f"#EXTINF:{length:.6f},",
                       f"segment/segment_{index:05d}.ts?id={job['id']}&generation={job['generation']}"]
         return "\n".join([*lines, "#EXT-X-ENDLIST", ""])
@@ -94,6 +112,7 @@ class ContinuousProxyManager(PersistentProxyManager):
             "-progress", "pipe:1", "-nostats", "-filter_threads", str(THREADS),
             *before, "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?", *after,
             "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-ar", "48000",
+            "-af", "apad", "-shortest",
             "-t", str(job["duration"]), "-f", "hls", "-hls_time", str(SEGMENT_SECONDS),
             "-hls_playlist_type", "event", "-hls_flags", "independent_segments+temp_file",
             "-hls_segment_options", "mpegts_copyts=1", "-muxdelay", "0", "-muxpreload", "0",
@@ -137,8 +156,11 @@ class ContinuousProxyManager(PersistentProxyManager):
             self._published(job)
             if process.returncode:
                 raise RuntimeError(errors.decode(errors="replace") or "Continuous preview encoder failed")
-            if last_frame <= 0 or len(self.built[job["id"]]) != self.count(job):
-                raise RuntimeError("Source ended before the advertised preview duration")
+            if last_frame <= 0 or not job.get("encoder_finished") or not self.built[job["id"]]:
+                raise RuntimeError("Encoder did not finish a playable preview")
+            for index in self.built[job["id"]]:
+                if (directory / f"segment_{index:05d}.ts").stat().st_size == 0:
+                    raise RuntimeError("Encoder produced an empty preview section")
         except TimeoutError:
             raise RuntimeError(f"Continuous preview made no progress for {self.progress_timeout} seconds") from None
         finally:
@@ -163,7 +185,8 @@ class ContinuousProxyManager(PersistentProxyManager):
                 # Every retry/restart gets new URLs. No stream can accidentally
                 # splice a restarted encoder's counters/timestamps into old TS.
                 job.update(generation=uuid.uuid4().hex, available_end=0,
-                           continuous_complete=False, build_status="building")
+                           continuous_complete=False, encoder_finished=False,
+                           segment_lengths=[], build_status="building")
                 self.built[job["id"]] = set()
                 directory = self.generation_dir(job)
                 directory.mkdir(parents=True)
@@ -182,6 +205,10 @@ class ContinuousProxyManager(PersistentProxyManager):
             if await asyncio.to_thread(self.signature, source) != job["signature"]:
                 raise HTTPException(409, "Video changed; select it again")
             job["continuous_complete"] = True
+            job.setdefault("source_duration", job["duration"])
+            job["duration"] = sum(job["segment_lengths"])
+            job["available_end"] = job["duration"]
+            job["resume_seconds"] = min(job["resume_seconds"], max(0, job["duration"] - .2))
             self._completed(job)
             self.save(job)
 
